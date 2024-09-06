@@ -206,7 +206,7 @@ func (mlp *MLP) calculateMSE(epoch int) {
 
 // determineClass determines testing example class given sample number and sample
 func (mlp *MLP) determineClass() error {
-	// At output layer, classify example, increment class count, %correct
+	// At output layer, classify example and store the name
 
 	// convert node outputs to the class; zero is the threshold
 	class := 0
@@ -342,6 +342,14 @@ func (mlp *MLP) propagateBackward() error {
 // runEpochs performs forward and backward propagation over each sample
 func (mlp *MLP) runEpochs() error {
 
+	// number of directories containing the training wav files
+	const ndirs int = 7
+	// read order of the audio wav file directories
+	readOrder := make([]int, ndirs)
+	for i := 0; i < ndirs; i++ {
+		readOrder[i] = i
+	}
+
 	// Initialize the weights
 
 	// input layer
@@ -365,31 +373,43 @@ func (mlp *MLP) runEpochs() error {
 		}
 	}
 	for n := 0; n < mlp.epochs; n++ {
-		//fmt.Printf("epoch %d\n", n)
-		// Loop over the training examples
-		for _, samp := range mlp.samples {
-			// Forward Propagation
-			err := mlp.propagateForward(samp)
-			if err != nil {
-				return fmt.Errorf("forward propagation error: %s", err.Error())
+		// loop over the audio wav file directories
+		// shuffle the audio wav file directories read order
+		rand.Shuffle(len(readOrder), func(i, j int) {
+			readOrder[i], readOrder[j] = readOrder[j], readOrder[i]
+		})
+
+		for _, val := range readOrder {
+			wavdir := filepath.Join(dataDir, fmt.Sprintf("audiowav%d", val))
+			if err := mlp.createExamples(wavdir); err != nil {
+				fmt.Printf("createExamples error: %v\n", err)
+				return fmt.Errorf("createExamples error: %v", err.Error())
 			}
 
-			// Backward Propagation
-			err = mlp.propagateBackward()
-			if err != nil {
-				return fmt.Errorf("backward propagation error: %s", err.Error())
+			// Shuffle training exmaples
+			rand.Shuffle(len(mlp.samples), func(i, j int) {
+				mlp.samples[i], mlp.samples[j] = mlp.samples[j], mlp.samples[i]
+			})
+
+			// Loop over the training examples
+			for _, samp := range mlp.samples {
+				// Forward Propagation
+				err := mlp.propagateForward(samp)
+				if err != nil {
+					return fmt.Errorf("forward propagation error: %s", err.Error())
+				}
+
+				// Backward Propagation
+				err = mlp.propagateBackward()
+				if err != nil {
+					return fmt.Errorf("backward propagation error: %s", err.Error())
+				}
 			}
 		}
-
 		// At the end of each epoch, loop over the output nodes and calculate mse
 		mlp.calculateMSE(n)
 
-		// Shuffle training exmaples
-		rand.Shuffle(len(mlp.samples), func(i, j int) {
-			mlp.samples[i], mlp.samples[j] = mlp.samples[j], mlp.samples[i]
-		})
 	}
-
 	return nil
 }
 
@@ -401,12 +421,12 @@ func init() {
 }
 
 // createExamples creates a slice of training or testing examples
-func (mlp *MLP) createExamples() error {
+func (mlp *MLP) createExamples(wavdir string) error {
 	// read in audio wav files and convert 16-bit samples to []float64
-	files, err := os.ReadDir(dataDir)
+	files, err := os.ReadDir(wavdir)
 	if err != nil {
-		fmt.Printf("ReadDir for %s error: %v\n", dataDir, err)
-		return fmt.Errorf("ReadDir for %s error %v", dataDir, err.Error())
+		fmt.Printf("ReadDir for %s error: %v\n", wavdir, err)
+		return fmt.Errorf("ReadDir for %s error %v", wavdir, err.Error())
 	}
 
 	// Power Spectral Density, PSD[N/2] is the Nyquist critical frequency
@@ -418,8 +438,8 @@ func (mlp *MLP) createExamples() error {
 	class := 0
 	for _, dirEntry := range files {
 		name := dirEntry.Name()
-		if filepath.Ext(name) == ".wav" && name != msgTestWav {
-			f, err := os.Open(path.Join(dataDir, name))
+		if filepath.Ext(name) == ".wav" {
+			f, err := os.Open(path.Join(wavdir, name))
 			if err != nil {
 				fmt.Printf("Open %s error: %v\n", name, err)
 				return fmt.Errorf("file Open %s error: %v", name, err.Error())
@@ -458,25 +478,24 @@ func (mlp *MLP) createExamples() error {
 			class++
 		}
 	}
-	fmt.Printf("Read %d wav files for training.\n", class)
 
 	return nil
 }
 
 // display the vocabulary so the user can compose a message
 func fillVocabulary(plot *PlotT) error {
-	// read audio wav files in dataDir and convert the filename to class
-	files, err := os.ReadDir(dataDir)
+	// read audio wav files in dataDir\audiowav0 and convert the filename to class
+	files, err := os.ReadDir(filepath.Join(dataDir, "audiowav0"))
 	if err != nil {
-		fmt.Printf("ReadDir for %s error: %v\n", dataDir, err)
-		return fmt.Errorf("ReadDir for %s error %v", dataDir, err.Error())
+		fmt.Printf("ReadDir for %s error: %v\n", filepath.Join(dataDir, "audiowav0"), err)
+		return fmt.Errorf("ReadDir for %s error %v", filepath.Join(dataDir, "audiowav0"), err.Error())
 	}
 
 	plot.Vocabulary = make([]string, 0)
 	// Each audio wav file is a separate audio class
 	for _, dirEntry := range files {
 		name := dirEntry.Name()
-		if filepath.Ext(name) == ".wav" && name != msgTestWav {
+		if filepath.Ext(name) == ".wav" {
 			plot.Vocabulary = append(plot.Vocabulary, strings.Split(name, ".")[0])
 		}
 	}
@@ -485,18 +504,18 @@ func fillVocabulary(plot *PlotT) error {
 
 // retrieveClasses retrieves the classes discovered during training
 func (mlp *MLP) retrieveClasses() error {
-	// read audio wav files in dataDir and convert the filename to class
-	files, err := os.ReadDir(dataDir)
+	// read audio wav files in dataDir\audiowav and convert the filename to class
+	files, err := os.ReadDir(filepath.Join(dataDir, "audiowav0"))
 	if err != nil {
-		fmt.Printf("ReadDir for %s error: %v\n", dataDir, err)
-		return fmt.Errorf("ReadDir for %s error %v", dataDir, err.Error())
+		fmt.Printf("ReadDir for %s error: %v\n", filepath.Join(dataDir, "audiowav0"), err)
+		return fmt.Errorf("ReadDir for %s error %v", filepath.Join(dataDir, "audiowav0"), err.Error())
 	}
 
 	// Each audio wav file is a separate audio class
 	class := 0
 	for _, dirEntry := range files {
 		name := dirEntry.Name()
-		if filepath.Ext(name) == ".wav" && name != msgTestWav {
+		if filepath.Ext(name) == ".wav" {
 
 			mlp.samples = append(mlp.samples, Sample{})
 			// save the name of the audio wav without the ext
@@ -748,18 +767,6 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Create training examples by reading in the encoded characters
-		err = mlp.createExamples()
-		if err != nil {
-			fmt.Printf("createExamples error: %v\n", err)
-			plot.Status = fmt.Sprintf("createExamples error: %v", err.Error())
-			// Write to HTTP using template and grid
-			if err := tmplTrainingMLP.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-			}
-			return
-		}
-
 		// Loop over the Epochs
 		err = mlp.runEpochs()
 		if err != nil {
@@ -907,7 +914,7 @@ func (mlp *MLP) findWords(data []float64) ([]Bound, error) {
 			sum += (new - old)
 			cur = (cur + 1) % win
 			if k > start+win && sum < levelSum*hystersis {
-				stop = k - win
+				stop = k
 				bounds[j].stop = stop
 				k++
 				fmt.Printf("stop = %.2f sec, sum = %.2f\n", float64(stop)*.000125, sum)
@@ -1217,7 +1224,7 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 	err = mlp.retrieveClasses()
 	if err != nil {
 		fmt.Printf("retrieveClasses error: %v\n", err)
-		plot.Status = fmt.Sprintf("createExamples error: %v", err.Error())
+		plot.Status = fmt.Sprintf("retrieveClasses error: %v", err.Error())
 		// Write to HTTP using template and grid
 		if err := tmplTestingMLP.Execute(w, plot); err != nil {
 			log.Fatalf("Write to HTTP output using template with error: %v\n", err)
@@ -1862,6 +1869,17 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		audiowavdir := r.FormValue("audiowavdir")
+		if len(audiowavdir) == 0 {
+			fmt.Println("Enter directory for the audio wav file")
+			plot.Status = "Enter director for the audio wav file"
+			// Write to HTTP using template and grid
+			if err := tmplVocabularyMLP.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
+		}
+
 		// Determine if time or frequency domain plot
 		domain := r.FormValue("domain")
 		// Time Domain
@@ -1873,7 +1891,7 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 
 		if plot.TimeDomain {
 			mlp = &MLP{plot: &plot}
-			err := mlp.processTimeDomain(filename)
+			err := mlp.processTimeDomain(filepath.Join(audiowavdir, filename))
 			if err != nil {
 				fmt.Printf("processTimeDomain error: %v\n", err)
 				plot.Status = fmt.Sprintf("processTimeDomain error: %v", err.Error())
@@ -1883,7 +1901,7 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			plot.Status += fmt.Sprintf("Time Domain of %s plotted.", filepath.Join(dataDir, filename))
+			plot.Status += fmt.Sprintf("Time Domain of %s plotted.", filepath.Join(dataDir, audiowavdir, filename))
 			// Frequency Domain
 		} else {
 			fftWindow := r.FormValue("fftwindow")
@@ -1901,7 +1919,7 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 			}
 			mlp = &MLP{plot: &plot, fftSize: fftSize, fftWindow: fftWindow}
 
-			err = mlp.processFrequencyDomain(filename, fftWindow, fftSize)
+			err = mlp.processFrequencyDomain(filepath.Join(audiowavdir, filename), fftWindow, fftSize)
 			if err != nil {
 				fmt.Printf("processFrequencyDomain error: %v\n", err)
 				plot.Status = fmt.Sprintf("processFrequencyDomain error: %v", err.Error())
@@ -1920,7 +1938,7 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 			log.Fatal("fmedia is not available in PATH")
 		} else {
 			fmt.Printf("fmedia is available in path: %s\n", fmedia)
-			cmd := exec.Command(fmedia, filepath.Join(dataDir, filename))
+			cmd := exec.Command(fmedia, filepath.Join(dataDir, audiowavdir, filename))
 			stdoutStderr, err := cmd.CombinedOutput()
 			if err != nil {
 				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
@@ -1946,8 +1964,9 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 			log.Fatal("fmedia is not available in PATH")
 		} else {
 			fmt.Printf("fmedia is available in path: %s\n", fmedia)
+			// filename includes the audiowav folder; eg.,  audiowavX/cat.wav, were X = 0, 1, 2, ...
 			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, filename), "--until=5",
-				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-20", "--stop-dblevel=-20;1")
+				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-30", "--stop-dblevel=-20;1")
 			stdoutStderr, err := cmd.CombinedOutput()
 			if err != nil {
 				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
@@ -1974,8 +1993,18 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		audiowavdir := r.FormValue("audiowavdir")
+		if len(audiowavdir) == 0 {
+			fmt.Println("Enter directory for the audio wav file")
+			plot.Status = "Enter directory for the audio wav file"
+			// Write to HTTP using template and grid
+			if err := tmplVocabularyMLP.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
+		}
 		if filepath.Ext(filename) == ".wav" {
-			if err := os.Remove(path.Join(dataDir, filename)); err != nil {
+			if err := os.Remove(path.Join(dataDir, audiowavdir, filename)); err != nil {
 				plot.Status = fmt.Sprintf("Remove %s error: %v", filename, err)
 				// Write to HTTP using template and grid
 				if err := tmplVocabularyMLP.Execute(w, plot); err != nil {

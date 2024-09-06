@@ -193,7 +193,8 @@
 							</p>
 							<p>
 								<strong>The filename should be the same as the new word you are adding to the vocabulary.
-									It should end with the wav extension.
+									It should end with the wav extension.  The Audio Wav Directory must be specified
+									for play/delete operations.
 								</strong>
 							</p>
 							<input type="radio" id="wordplay" name="word" value="play" checked />
@@ -203,11 +204,23 @@
 							<input type="radio" id="wordnew" name="word" value="new" />
 							<label for="wordnew">New Word</label>
 							<br />
-							<label for="newfile">New Audio Wav Filename:</label>
+							<label for="newfile">New Audio Wav Filename with Audio WAV Dir:</label>
 							<input type="text" id="newfile" name="filenew" />
 							<br />
 							<label for="deleteplayfile">Delete/Play Audio Wav Filename:</label>
 							<input type="file" id="deleteplayfile" name="fileplaydelete" />
+							<br />
+							<label for="audiowavdir">Audio Wav Directory:</label>
+							<select id="audiowavdir" name="audiowavdir">
+								<option value="" selected>... Enter Audio Wav Directory ...</option>
+								<option value="audiowav0">audiowav0</option>
+								<option value="audiowav1">audiowav1</option>
+								<option value="audiowav2">audiowav2</option>
+								<option value="audiowav3">audiowav3</option>
+								<option value="audiowav4">audiowav4</option>
+								<option value="audiowav5">audiowav5</option>
+								<option value="audiowav6">audiowav6</option>
+							</select>
 							<br />
 							<input type="radio" name="domain" value="time" id="timedomain" checked />
 							<label for="timedomain">Time Domain</label>
@@ -231,6 +244,7 @@
 							<br />
 							<label for="fftsize" class="fftparam">FFT Size:</label>
 							<select id="fftsize" name="fftsize" required>
+								<option value="512">512</option>
 								<option value="1024">1024</option>
 								<option value="2048">2048</option>
 								<option value="4096">4096</option>
