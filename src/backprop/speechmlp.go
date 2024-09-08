@@ -485,8 +485,6 @@ func (mlp *MLP) createExamples(wavdir string) error {
 				return fmt.Errorf("calculatePSD error: %v", err.Error())
 			}
 
-			mlp.nsamples = n
-
 			// save the name of the audio wav without the ext
 			mlp.samples[class].name = strings.Split(name, ".")[0]
 			// The desired output of the MLP is class
@@ -1004,7 +1002,7 @@ func (mlp *MLP) runClassification() error {
 	// Insert the class in mlp.words using mlp.samples[class].name
 	for _, bound := range bounds {
 		// calculate the PSD using Bartlett's or Welch's variant of the Periodogram
-		fmt.Printf("bound.start = %d, bound.stop = %d\n", bound.start, bound.stop)
+		fmt.Printf("bound.start = %.3f, bound.stop = %.3f\n", float64(bound.start)*.000125, float64(bound.stop)*.000125)
 		mlp.nsamples = bound.stop - bound.start
 		_, _, err = mlp.calculatePSD(bufFlt.Data[bound.start:bound.stop], PSD, "normalize", mlp.fftWindow, mlp.fftSize)
 		if err != nil {
