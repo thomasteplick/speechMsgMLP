@@ -88,6 +88,8 @@ type PlotT struct {
 	FFTWindow    string   // Bartlett, Welch, Hamming, Hanning, Rectangle
 	TimeDomain   bool     // plot time domain, otherwise plot frequency domain
 	Vocabulary   []string // vocabulary for the message
+	WordWindow   string   // vocabulary word size for start/stop determination
+	Threshold    string   // dB level for start/stop determination
 }
 
 // Type to hold the minimum and maximum data values of the MSE in the Learning Curve
@@ -343,7 +345,7 @@ func (mlp *MLP) propagateBackward() error {
 func (mlp *MLP) runEpochs() error {
 
 	// number of directories containing the training wav files
-	const ndirs int = 7
+	const ndirs int = 10
 	// read order of the audio wav file directories
 	readOrder := make([]int, ndirs)
 	for i := 0; i < ndirs; i++ {
@@ -463,12 +465,27 @@ func (mlp *MLP) createExamples(wavdir string) error {
 			//fmt.Printf("%s samples = %d\n", name, n)
 			mlp.nsamples = n
 
+			// loop over fltBuf and find the word boundary
+			bounds, err := mlp.findWords(bufFlt.Data)
+			if err != nil {
+				fmt.Printf("findWords error: %v", err)
+				return fmt.Errorf("findWords error: %s", err.Error())
+			}
+
+			if len(bounds) != 1 {
+				fmt.Printf("found %d words in %s\n", len(bounds), name)
+				return fmt.Errorf("found %d words in %s", len(bounds), name)
+			}
+
 			// calculate the PSD using Bartlett's or Welch's variant of the Periodogram
-			_, _, err = mlp.calculatePSD(bufFlt.Data, PSD, "normalize", mlp.fftWindow, mlp.fftSize)
+			mlp.nsamples = bounds[0].stop - bounds[0].start
+			_, _, err = mlp.calculatePSD(bufFlt.Data[bounds[0].start:bounds[0].stop], PSD, "normalize", mlp.fftWindow, mlp.fftSize)
 			if err != nil {
 				fmt.Printf("calculatePSD error: %v\n", err)
 				return fmt.Errorf("calculatePSD error: %v", err.Error())
 			}
+
+			mlp.nsamples = n
 
 			// save the name of the audio wav without the ext
 			mlp.samples[class].name = strings.Split(name, ".")[0]
@@ -569,6 +586,26 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 		return nil, fmt.Errorf("fftsize int conversion error: %s", err.Error())
 	}
 
+	text := r.FormValue("window")
+	if len(text) == 0 {
+		return nil, fmt.Errorf("select Threshold and Window from the lists")
+	}
+	window, err := strconv.Atoi(text)
+	if err != nil {
+		fmt.Printf("Conversion to int of 'window' error: %v\n", err)
+		return nil, err
+	}
+
+	text = r.FormValue("threshold")
+	if len(text) == 0 {
+		return nil, fmt.Errorf("select Threshold and Window from the lists")
+	}
+	dbLevel, err := strconv.Atoi(text)
+	if err != nil {
+		fmt.Printf("Conversion to int of 'threshold' error: %v\n", err)
+		return nil, err
+	}
+
 	mlp := MLP{
 		hiddenLayers: hiddenLayers,
 		layerDepth:   layerDepth,
@@ -583,8 +620,10 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 			ymax: -math.MaxFloat64,
 			xmin: 0,
 			xmax: float64(epochs - 1)},
-		samples: make([]Sample, classes),
-		words:   make([]string, 0),
+		samples:    make([]Sample, classes),
+		words:      make([]string, 0),
+		wordWindow: window,
+		dbLevel:    dbLevel,
 	}
 	for i := range mlp.samples {
 		mlp.samples[i].psd = make([]float64, fftSize/2)
@@ -803,7 +842,7 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 		mlp.plot.Epochs = strconv.Itoa(mlp.epochs)
 
 		// Save hidden layers, hidden layer depth, classes, epochs, fft size, fft window,
-		// and weights to csv file, one layer per line
+		// window, threshold, and weights to csv file, one layer per line
 		f, err := os.Create(path.Join(dataDir, fileweights))
 		if err != nil {
 			fmt.Printf("os.Create() file %s error: %v\n", path.Join(fileweights), err)
@@ -816,8 +855,9 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer f.Close()
 		// save MLP parameters
-		fmt.Fprintf(f, "%d,%d,%d,%d,%f,%f,%d,%s\n",
-			mlp.epochs, mlp.hiddenLayers, mlp.layerDepth, classes, mlp.learningRate, mlp.momentum, mlp.fftSize, mlp.fftWindow)
+		fmt.Fprintf(f, "%d,%d,%d,%d,%f,%f,%d,%s,%d,%d\n",
+			mlp.epochs, mlp.hiddenLayers, mlp.layerDepth, classes, mlp.learningRate,
+			mlp.momentum, mlp.fftSize, mlp.fftWindow, mlp.wordWindow, mlp.dbLevel)
 		// save weights
 		// save first layer, one weight per line because too long to scan in
 		for _, node := range mlp.link[0] {
@@ -882,13 +922,9 @@ func (mlp *MLP) findWords(data []float64) ([]Bound, error) {
 	// Determines when the word and message ends
 	// Convert wordWindow to ms
 	win := int(float64(mlp.wordWindow) * .001 / (1.0 / float64(sampleRate)))
-	// The word start audio level.
-	level := max / math.Pow(10.0, float64(mlp.dbLevel)/20.0)
 	// Minimum audio integration to determine when word begins and ends
 	levelSum := float64(win) * avg
 	buf := make([]float64, win)
-
-	fmt.Printf("window = %d, level= %f, levelSum = %f, max = %f\n", win, level, levelSum, max)
 
 	for k < L {
 		for k < L {
@@ -901,7 +937,6 @@ func (mlp *MLP) findWords(data []float64) ([]Bound, error) {
 				start = k - win
 				bounds = append(bounds, Bound{start: start})
 				k++
-				fmt.Printf("start = %.2f sec, sum = %.2f ", float64(start)*.000125, sum)
 				break
 			}
 			k++
@@ -917,7 +952,6 @@ func (mlp *MLP) findWords(data []float64) ([]Bound, error) {
 				stop = k
 				bounds[j].stop = stop
 				k++
-				fmt.Printf("stop = %.2f sec, sum = %.2f\n", float64(stop)*.000125, sum)
 				break
 			}
 			k++
@@ -970,6 +1004,7 @@ func (mlp *MLP) runClassification() error {
 	// Insert the class in mlp.words using mlp.samples[class].name
 	for _, bound := range bounds {
 		// calculate the PSD using Bartlett's or Welch's variant of the Periodogram
+		fmt.Printf("bound.start = %d, bound.stop = %d\n", bound.start, bound.stop)
 		mlp.nsamples = bound.stop - bound.start
 		_, _, err = mlp.calculatePSD(bufFlt.Data[bound.start:bound.stop], PSD, "normalize", mlp.fftWindow, mlp.fftSize)
 		if err != nil {
@@ -999,6 +1034,8 @@ func (mlp *MLP) runClassification() error {
 	mlp.plot.FFTSize = strconv.Itoa(mlp.fftSize)
 	mlp.plot.FFTWindow = mlp.fftWindow
 	mlp.plot.Epochs = strconv.Itoa(mlp.epochs)
+	mlp.plot.WordWindow = strconv.Itoa(mlp.wordWindow)
+	mlp.plot.Threshold = strconv.Itoa(mlp.dbLevel)
 
 	mlp.plot.Status = "Testing results completed."
 
@@ -1006,7 +1043,7 @@ func (mlp *MLP) runClassification() error {
 }
 
 // newTestingMLP constructs an MLP from the saved mlp weights and parameters
-func newTestingMLP(r *http.Request, plot *PlotT) (*MLP, error) {
+func newTestingMLP(plot *PlotT) (*MLP, error) {
 	// Read in weights from csv file, ordered by layers, and MLP parameters
 	f, err := os.Open(path.Join(dataDir, fileweights))
 	if err != nil {
@@ -1021,6 +1058,10 @@ func newTestingMLP(r *http.Request, plot *PlotT) (*MLP, error) {
 	line := scanner.Text()
 
 	items := strings.Split(line, ",")
+	if len(items) != 10 {
+		fmt.Printf("Testing parameters missing, should be 10, is %d\n", len(items))
+		return nil, fmt.Errorf("testing parameters missing, run Train first")
+	}
 
 	epochs, err := strconv.Atoi(items[0])
 	if err != nil {
@@ -1064,21 +1105,13 @@ func newTestingMLP(r *http.Request, plot *PlotT) (*MLP, error) {
 
 	fftWindow := items[7]
 
-	text := r.FormValue("window")
-	if len(text) == 0 {
-		return nil, fmt.Errorf("select Threshold and Window from the lists")
-	}
-	window, err := strconv.Atoi(text)
+	window, err := strconv.Atoi(items[8])
 	if err != nil {
 		fmt.Printf("Conversion to int of 'window' error: %v\n", err)
 		return nil, err
 	}
 
-	text = r.FormValue("threshold")
-	if len(text) == 0 {
-		return nil, fmt.Errorf("select Threshold and Window from the lists")
-	}
-	dbLevel, err := strconv.Atoi(text)
+	dbLevel, err := strconv.Atoi(items[9])
 	if err != nil {
 		fmt.Printf("Conversion to int of 'threshold' error: %v\n", err)
 		return nil, err
@@ -1184,7 +1217,7 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Construct MLP instance containing MLP state
-	mlp, err = newTestingMLP(r, &plot)
+	mlp, err = newTestingMLP(&plot)
 	if err != nil {
 		fmt.Printf("newTestingMLP() error: %v\n", err)
 		plot.Status = fmt.Sprintf("newTestingMLP() error: %v", err.Error())
@@ -1256,10 +1289,10 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 	// Determine if time or frequency domain plot
 	domain := r.FormValue("domain")
 	// Time Domain
-	if domain == "time" {
-		plot.TimeDomain = true
-	} else {
+	if domain == "frequency" {
 		plot.TimeDomain = false
+	} else {
+		plot.TimeDomain = true
 	}
 
 	if plot.TimeDomain {

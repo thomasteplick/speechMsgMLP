@@ -139,7 +139,7 @@
 				min-width: 350px;
 			}
 
-			.fftparam, .speechparam {
+			.fftparam {
 				float: left;
 				text-align: right;
 				width: 200px;
@@ -221,6 +221,12 @@
 									<td>FFT Size:</td>
 									<td>{{.FFTSize}}</td>
 								</tr>
+								<tr>
+									<td>Word Window (ms):</td>
+									<td>{{.WordWindow}}</td>
+									<td>Threshold (dB):</td>
+									<td>{{.Threshold}}</td>
+								</tr>
 							</table>
 							<input type="checkbox" id="newmessage" name="message" value="new" />
 							<label for="newmessage">New Message</label>
@@ -254,33 +260,6 @@
 								<option value="8192" selected>8192</option>
 							</select>
 							<hr />
-							<h3>Speech Parameters</h3>
-							<p>
-								Threshold determines the audio level at which a word starts.  Window
-								determines the time over which the audio is integrated.  This in 
-								turn determines when the word and message ends.
-							</p>
-							<label for="threshold" class="speechparam">Threshold (db):</label>
-							<select id="threshold" name="threshold" required>
-								<option value="" selected>... Enter Threshold (dB) ...</option>
-								<option value="5">5 db</option>
-								<option value="10">10 dB</option>
-								<option value="20">20 dB</option>
-								<option value="30">30 dB</option>
-								<option value="40">40 dB</option>
-							</select>
-							<br />
-							<label for="window" class="speechparam">Window (ms):</label>
-							<select id="window" name="window" required>
-								<option value="" selected>... Enter Window (ms) ...</option>
-								<option value="40">40 ms</option>
-								<option value="50">50 ms</option>
-								<option value="60">60 ms</option>
-								<option value="70">70 ms</option>
-								<option value="80">80 ms</option>
-								<option value="90">90 ms</option>
-								<option value="100">100 ms</option>
-							</select>
 						</div>
 						<input type="submit" value="Submit" />
 						<input type="text" size="100px" id="status" name="status" value="{{.Status}}" readonly />
