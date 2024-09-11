@@ -1546,8 +1546,6 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, plottype, fftWindow
 		PSD[i] = 0.0
 	}
 
-	// Find the mean by averaging the PSD sum
-	psdSum := 0.0
 	var sections int
 
 	// Bartlett's method has no overlap of input data and uses the rectangle window
@@ -1574,7 +1572,6 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, plottype, fftWindow
 				xj := cmplx.Abs(fourierN[j])
 				xNj := cmplx.Abs(fourierN[N-j])
 				PSD[j] += xj*xj + xNj*xNj
-				psdSum += PSD[j]
 			}
 
 			// part of K*Sum(w[i]*w[i]) PSD normalizer
@@ -1608,7 +1605,6 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, plottype, fftWindow
 				xj := cmplx.Abs(fourierN[j])
 				xNj := cmplx.Abs(fourierN[N-j])
 				PSD[j] += xj*xj + xNj*xNj
-				psdSum += PSD[j]
 			}
 
 			// part of K*Sum(w[i]*w[i]) PSD normalizer
@@ -1648,7 +1644,6 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, plottype, fftWindow
 				xj := cmplx.Abs(fourierN[j])
 				xNj := cmplx.Abs(fourierN[N-j])
 				PSD[j] += xj*xj + xNj*xNj
-				psdSum += PSD[j]
 			}
 
 			// part of K*Sum(w[i]*w[i]) PSD normalizer
@@ -1690,7 +1685,6 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, plottype, fftWindow
 				xj := cmplx.Abs(fourierN[j])
 				xNj := cmplx.Abs(fourierN[N-j])
 				PSD[j] += xj*xj + xNj*xNj
-				psdSum += PSD[j]
 			}
 
 			// part of K*Sum(w[i]*w[i]) PSD normalizer
@@ -1703,9 +1697,7 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, plottype, fftWindow
 	// Use log plot for wide dynamic range
 	if plottype == "normalize" {
 		// preprocess data for MLP by removing the mean
-		psdMean := psdSum / float64(m*sections)
 		for i := range PSD {
-			PSD[i] = (PSD[i] - psdMean) / normalizerPSD
 			if PSD[i] > psdMax {
 				psdMax = PSD[i]
 			}
@@ -1715,7 +1707,7 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, plottype, fftWindow
 		}
 		// Normalize to 1, otherwise the activation function saturates
 		for i := range PSD {
-			PSD[i] /= psdMax
+			PSD[i] = (PSD[i]/psdMax - 0.5) * 2.0
 		}
 		// 10log10 in dB
 	} else if plottype == "log" {
