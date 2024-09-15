@@ -69,6 +69,8 @@ const (
 	twoPi                = 2.0 * math.Pi // 2Pi
 	bitDepth             = 16            // audio wav encoder/decoder sample size
 	msgTestWav           = "message.wav" // Test message wav file
+	transformSize        = 4000          // .5 sec * 8000 samples/sec limits the word size
+	transformFFTSize     = 256           // FFT size for STFT
 )
 
 // Type to contain all the HTML template actions
@@ -114,9 +116,9 @@ type Link struct {
 
 // training examples
 type Sample struct {
-	name    string    // audio wav frequency content
-	desired int       // numerical class of the audio wav file
-	psd     []float64 // Power Spectral Density
+	name      string    // audio wav frequency content
+	desired   int       // numerical class of the audio wav file
+	transform []float64 // short-time PSD
 }
 
 type Bound struct {
@@ -238,7 +240,7 @@ func (mlp *MLP) class2desired(class int) {
 func (mlp *MLP) propagateForward(samp Sample) error {
 	// Assign sample to input layer, i=0 is the bias equal to one
 	for i := 1; i < len(mlp.node[0]); i++ {
-		mlp.node[0][i].y = float64(samp.psd[i-1])
+		mlp.node[0][i].y = float64(samp.transform[i-1])
 	}
 
 	// calculate desired from the class
@@ -431,10 +433,7 @@ func (mlp *MLP) createExamples(wavdir string) error {
 		return fmt.Errorf("ReadDir for %s error %v", wavdir, err.Error())
 	}
 
-	// Power Spectral Density, PSD[N/2] is the Nyquist critical frequency
-	// It is (sampling frequency)/2, the highest non-aliased frequency
-	N := mlp.fftSize
-	PSD := make([]float64, N/2)
+	transform := make([]float64, transformSize/2)
 
 	// Each audio wav file is a separate audio class
 	class := 0
@@ -477,19 +476,24 @@ func (mlp *MLP) createExamples(wavdir string) error {
 				return fmt.Errorf("found %d words in %s", len(bounds), name)
 			}
 
-			// calculate the PSD using Bartlett's or Welch's variant of the Periodogram
+			// calculate the transform using Bartlett's variant of the Periodogram
+			// and short-time Fourier transform
 			mlp.nsamples = bounds[0].stop - bounds[0].start
-			_, _, err = mlp.calculatePSD(bufFlt.Data[bounds[0].start:bounds[0].stop], PSD, "normalize", mlp.fftWindow, mlp.fftSize)
+			if mlp.nsamples > transformSize {
+				//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, transformSize)
+				mlp.nsamples = transformSize
+			}
+			err = mlp.transformAudio(bufFlt.Data[bounds[0].start:bounds[0].stop], transform)
 			if err != nil {
-				fmt.Printf("calculatePSD error: %v\n", err)
-				return fmt.Errorf("calculatePSD error: %v", err.Error())
+				fmt.Printf("transformAudio error: %v\n", err)
+				return fmt.Errorf("transformAudio error: %v", err.Error())
 			}
 
 			// save the name of the audio wav without the ext
 			mlp.samples[class].name = strings.Split(name, ".")[0]
 			// The desired output of the MLP is class
 			mlp.samples[class].desired = class
-			copy(mlp.samples[class].psd, PSD)
+			copy(mlp.samples[class].transform, transform)
 			class++
 		}
 	}
@@ -575,14 +579,9 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 		return nil, fmt.Errorf("epochs int conversion error: %s", err.Error())
 	}
 
-	fftWindow := r.FormValue("fftwindow")
-
-	txt = r.FormValue("fftsize")
-	fftSize, err := strconv.Atoi(txt)
-	if err != nil {
-		fmt.Printf("fftsize int conversion error: %v\n", err)
-		return nil, fmt.Errorf("fftsize int conversion error: %s", err.Error())
-	}
+	// Fixed FFT parameters for training using the STFT
+	fftWindow := "Rectangle"
+	fftSize := transformFFTSize
 
 	text := r.FormValue("window")
 	if len(text) == 0 {
@@ -624,7 +623,7 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 		dbLevel:    dbLevel,
 	}
 	for i := range mlp.samples {
-		mlp.samples[i].psd = make([]float64, fftSize/2)
+		mlp.samples[i].transform = make([]float64, transformSize/2)
 	}
 
 	// construct link that holds the weights and weight deltas
@@ -992,25 +991,26 @@ func (mlp *MLP) runClassification() error {
 		return fmt.Errorf("findWords error: %s", err.Error())
 	}
 
-	// Power Spectral Density, PSD[N/2] is the Nyquist critical frequency
-	// It is (sampling frequency)/2, the highest non-aliased frequency
-	N := mlp.fftSize
-	PSD := make([]float64, N/2)
-
-	// Loop over bounds and calculatePSD() for each word found in the test message
+	transform := make([]float64, transformSize/2)
+	// Loop over bounds and transformAudio for each word found in the test message
 	// Propagate forward and classify the word's PSD
 	// Insert the class in mlp.words using mlp.samples[class].name
 	for _, bound := range bounds {
-		// calculate the PSD using Bartlett's or Welch's variant of the Periodogram
+		// calculate the transform using Bartlett's variant of the Periodogram
+		// and the short-time Fourier transform
 		fmt.Printf("bound.start = %.3f, bound.stop = %.3f\n", float64(bound.start)*.000125, float64(bound.stop)*.000125)
 		mlp.nsamples = bound.stop - bound.start
-		_, _, err = mlp.calculatePSD(bufFlt.Data[bound.start:bound.stop], PSD, "normalize", mlp.fftWindow, mlp.fftSize)
+		if mlp.nsamples > transformSize {
+			//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, transformSize)
+			mlp.nsamples = transformSize
+		}
+		err = mlp.transformAudio(bufFlt.Data[bound.start:bound.stop], transform)
 		if err != nil {
-			fmt.Printf("calculatePSD error: %v\n", err)
-			return fmt.Errorf("calculatePSD error: %v", err.Error())
+			fmt.Printf("transformAudio error: %v\n", err)
+			return fmt.Errorf("transformAudio error: %v", err.Error())
 		}
 
-		samp := Sample{desired: 0, psd: PSD, name: ""}
+		samp := Sample{desired: 0, transform: transform, name: ""}
 		err := mlp.propagateForward(samp)
 		if err != nil {
 			return fmt.Errorf("forward propagation error: %s", err.Error())
@@ -1503,10 +1503,99 @@ func (mlp *MLP) processTimeDomain(filename string) error {
 	return nil
 }
 
+// transformAudio converts the audio to a sequence of short-time PSDs of each word
+func (mlp *MLP) transformAudio(audio []float64, transform []float64) error {
+	// loop over 256 sample sections of the audio
+	// calculate the PSD using 256-pt FFT and check for the max,
+	// 	add zeros if necessary for incomplete sections
+	// append the 128 mag^2 PSD result to transform
+	// zero the remaining elements of transform that don't have PSD entries
+	// When all PSDs are done, normalize the transform to (-1, 1)
+
+	// Bartlett's method has no overlap of input data and uses the rectangle window
+	N := transformFFTSize
+	m := N / 2
+	bufN := make([]complex128, N)
+	transformMax := -math.MaxFloat64 // maximum PSD value
+
+	// full sections, account for partial section later
+	sections := mlp.nsamples / N
+	start := 0
+	begin := 0
+	// Loop over sections and accumulate the PSD
+	for i := 0; i < sections; i++ {
+
+		for j := 0; j < N; j++ {
+			bufN[j] = complex(audio[start+j], 0)
+		}
+
+		// Perform N-point complex FFT and append to transform
+		fourierN := fft.FFT(bufN)
+		x := cmplx.Abs(fourierN[0])
+		transform[begin] = x * x
+		for j := 1; j < m; j++ {
+			// Use positive and negative frequencies -> bufN[N-j] = bufN[-j]
+			xj := cmplx.Abs(fourierN[j])
+			xNj := cmplx.Abs(fourierN[N-j])
+			transform[begin+j] = xj*xj + xNj*xNj
+		}
+
+		// No overlap, skip to next N samples
+		start += N
+		begin += m
+	}
+
+	// left over samples if nsamples is not a multiple of FFT size
+	diff := mlp.nsamples - start
+	//fmt.Printf("left over samples = %d\n", diff)
+	if diff > 0 {
+		for j := 0; j < diff; j++ {
+			bufN[j] = complex(audio[start+j], 0)
+		}
+
+		// zero-pad the remaining samples
+		for i := diff; i < N; i++ {
+			bufN[i] = 0
+		}
+
+		// Perform N-point complex FFT and add squares to previous values in PSD
+		// Normalize the PSD with the window sum, then convert to dB with 10*log10()
+		fourierN := fft.FFT(bufN)
+		x := cmplx.Abs(fourierN[0])
+		transform[begin] = x * x
+		end := m
+		if (transformSize/2 - begin) < m {
+			end = transformSize/2 - begin
+		}
+		for j := 1; j < end; j++ {
+			// Use positive and negative frequencies -> bufN[N-j] = bufN[-j]
+			xj := cmplx.Abs(fourierN[j])
+			xNj := cmplx.Abs(fourierN[N-j])
+			transform[begin+j] = xj*xj + xNj*xNj
+		}
+		begin += end
+	}
+
+	// zero any remaining transform elements when mlp.nsamples < transformSize
+	for i := begin; i < transformSize/2; i++ {
+		transform[i] = 0.0
+	}
+
+	for i := range transform {
+		if transform[i] > transformMax {
+			transformMax = transform[i]
+		}
+	}
+	// Normalize to (-1,1), otherwise the activation function saturates
+	for i := range transform {
+		transform[i] = (transform[i]/transformMax - 0.5) * 2.0
+	}
+
+	return nil
+}
+
 // Welch's Method and Bartlett's Method variation of the Periodogram
-func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, plottype, fftWindow string, fftSize int) (float64, float64, error) {
-	// if used for creating examples, remove the mean of the |FFT|^2 and use the mag^2
-	// for the FFT output, not the 10log10 dB.
+func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, fftWindow string, fftSize int) (float64, float64, error) {
 
 	N := fftSize
 	m := N / 2
@@ -1693,36 +1782,19 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, plottype, fftWindow
 
 	}
 
-	// Normalize the PSD using K*Sum(w[i]*w[i])
-	// Use log plot for wide dynamic range
-	if plottype == "normalize" {
-		// preprocess data for MLP by removing the mean
-		for i := range PSD {
-			if PSD[i] > psdMax {
-				psdMax = PSD[i]
-			}
-			if PSD[i] < psdMin {
-				psdMin = PSD[i]
-			}
+	for i := range PSD {
+		PSD[i] /= normalizerPSD
+		PSD[i] = 10.0 * math.Log10(PSD[i])
+		if PSD[i] > psdMax {
+			psdMax = PSD[i]
 		}
-		// Normalize to 1, otherwise the activation function saturates
-		for i := range PSD {
-			PSD[i] = (PSD[i]/psdMax - 0.5) * 2.0
+		if PSD[i] < psdMin {
+			psdMin = PSD[i]
 		}
-		// 10log10 in dB
-	} else if plottype == "log" {
-		for i := range PSD {
-			PSD[i] /= normalizerPSD
-			PSD[i] = 10.0 * math.Log10(PSD[i])
-			if PSD[i] > psdMax {
-				psdMax = PSD[i]
-			}
-			if PSD[i] < psdMin {
-				psdMin = PSD[i]
-			}
-		}
-	} else {
-		return 0, 0, fmt.Errorf("calculatePSD invalid plot type: %s", plottype)
+	}
+	// Normalize to 1, otherwise the activation function saturates
+	for i := range PSD {
+		PSD[i] = (PSD[i]/psdMax - 0.5) * 2.0
 	}
 
 	return psdMin, psdMax, nil
@@ -1769,7 +1841,7 @@ func (mlp *MLP) processFrequencyDomain(filename, fftWindow string, fftSize int) 
 		mlp.nsamples = n
 
 		// calculate the PSD using Bartlett's or Welch's variant of the Periodogram
-		psdMin, psdMax, err := mlp.calculatePSD(bufFlt.Data, PSD, "log", fftWindow, fftSize)
+		psdMin, psdMax, err := mlp.calculatePSD(bufFlt.Data, PSD, fftWindow, fftSize)
 		if err != nil {
 			fmt.Printf("calculatePSD error: %v\n", err)
 			return fmt.Errorf("calculatePSD error: %v", err.Error())

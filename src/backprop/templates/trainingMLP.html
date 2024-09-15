@@ -6,7 +6,7 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<style type="text/css">
 
-			.options label {
+			.options label, td {
 				font-size: 12px;
 				font-family: Arial, Helvetica, sans-serif;
 				width: 100px;
@@ -206,28 +206,13 @@
 									<td>
 										<input type="number" id="epochs" name="epochs" value="{{.Epochs}}" min="20" max="500" required />
 									</td>
-									<td></td>
-									<td></td>
+									<td name="fftwindow" class="align-right">FFT Window:</td>
+									<td>Rectangle</td>
+								<tr>
+									<td name="fftsize" class="align-right">FFT Size:</td>
+									<td>256</td>
 								</tr>
 							</table>
-							<label for="fftwindow" class="fftparam">FFT Window:</label>
-							<select id="fftwindow" name="fftwindow" required>
-								<option value="Bartlett">Bartlett</option>
-								<option value="Welch">Welch</option>
-								<option value="Hamming">Hamming</option>
-								<option value="Hanning">Hanning</option>
-								<option value="Rectangle" selected>Rectangle</option>
-							</select>
-							<br />
-							<label for="fftsize" class="fftparam">FFT Size:</label>
-							<select id="fftsize" name="fftsize" required>
-								<option value="256">256</option>
-								<option value="512">512</option>
-								<option value="1024">1024</option>
-								<option value="2048">2048</option>
-								<option value="4096">4096</option>
-								<option value="8192" selected>8192</option>
-							</select>
 							<hr />
 							<h3>Speech Parameters</h3>
 							<p>
