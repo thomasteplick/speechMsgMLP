@@ -61,16 +61,15 @@ const (
 	K1                   = b / a
 	K2                   = a * a
 	dataDir              = "data/"       // directory for the weights and audio wav files
-	maxSamples           = 50000         // max audio wav samples > 5 sec * sampleRate
+	maxSamples           = 40000         // max audio wav samples = 5 sec * sampleRate
 	classes              = 8             // number of audio wav files to classify
 	rows                 = 300           // rows in canvas
 	cols                 = 300           // columns in canvas
-	sampleRate           = 8000          // Hz
+	sampleRate           = 8000          // Hz or samples/sec
 	twoPi                = 2.0 * math.Pi // 2Pi
 	bitDepth             = 16            // audio wav encoder/decoder sample size
 	msgTestWav           = "message.wav" // Test message wav file
-	transformSize        = 4000          // .5 sec * 8000 samples/sec limits the word size
-	transformFFTSize     = 256           // FFT size for STFT
+	transformSize        = 6000          // .75 sec * 8000 samples/sec limits the word size
 )
 
 // Type to contain all the HTML template actions
@@ -85,7 +84,8 @@ type PlotT struct {
 	LearningRate string   // size of weight update for each iteration
 	Momentum     string   // previous weight update scaling factor
 	Epochs       string   // number of epochs
-	TestResults  string   // test message
+	TestResults  string   // classified test message
+	MsgSent      string   // actual message sent
 	FFTSize      string   // 8192, 4098, 2048, 1024
 	FFTWindow    string   // Bartlett, Welch, Hamming, Hanning, Rectangle
 	TimeDomain   bool     // plot time domain, otherwise plot frequency domain
@@ -116,9 +116,9 @@ type Link struct {
 
 // training examples
 type Sample struct {
-	name      string    // audio wav frequency content
-	desired   int       // numerical class of the audio wav file
-	transform []float64 // short-time PSD
+	name    string    // audio wav frequency content
+	desired int       // numerical class of the audio wav file
+	audio   []float64 // audio from WAV file
 }
 
 type Bound struct {
@@ -140,9 +140,8 @@ type MLP struct {
 	hiddenLayers int       // number of hidden layers
 	desired      []float64 // desired output of the sample
 	layerDepth   int       // hidden layer number of nodes
-	fftSize      int       // 1024, 2048, 4096, 8192
-	fftWindow    string    // one of the winTypes
-	words        []string  // words in test message
+	words        []string  // classified words in test message
+	msgSent      []string  // actual message sent
 	wordWindow   int       // message word window to accumulate audio level
 	dbLevel      int       // message word audio level to determine start
 }
@@ -240,7 +239,7 @@ func (mlp *MLP) class2desired(class int) {
 func (mlp *MLP) propagateForward(samp Sample) error {
 	// Assign sample to input layer, i=0 is the bias equal to one
 	for i := 1; i < len(mlp.node[0]); i++ {
-		mlp.node[0][i].y = float64(samp.transform[i-1])
+		mlp.node[0][i].y = float64(samp.audio[i-1])
 	}
 
 	// calculate desired from the class
@@ -359,8 +358,8 @@ func (mlp *MLP) runEpochs() error {
 	// input layer
 	// initialize the wgt and wgtDelta randomly, zero mean, normalize by fan-in
 	for i := range mlp.link[0] {
-		mlp.link[0][i].wgt = 2.0 * (rand.ExpFloat64() - .5) / float64(mlp.fftSize+1)
-		mlp.link[0][i].wgtDelta = 2.0 * (rand.ExpFloat64() - .5) / float64(mlp.fftSize+1)
+		mlp.link[0][i].wgt = 2.0 * (rand.ExpFloat64() - .5) / float64(transformSize+1)
+		mlp.link[0][i].wgtDelta = 2.0 * (rand.ExpFloat64() - .5) / float64(transformSize+1)
 	}
 
 	// output layer links
@@ -433,8 +432,6 @@ func (mlp *MLP) createExamples(wavdir string) error {
 		return fmt.Errorf("ReadDir for %s error %v", wavdir, err.Error())
 	}
 
-	transform := make([]float64, transformSize/2)
-
 	// Each audio wav file is a separate audio class
 	class := 0
 	for _, dirEntry := range files {
@@ -476,24 +473,28 @@ func (mlp *MLP) createExamples(wavdir string) error {
 				return fmt.Errorf("found %d words in %s", len(bounds), name)
 			}
 
-			// calculate the transform using Bartlett's variant of the Periodogram
-			// and short-time Fourier transform
 			mlp.nsamples = bounds[0].stop - bounds[0].start
 			if mlp.nsamples > transformSize {
 				//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, transformSize)
 				mlp.nsamples = transformSize
-			}
-			err = mlp.transformAudio(bufFlt.Data[bounds[0].start:bounds[0].stop], transform)
-			if err != nil {
-				fmt.Printf("transformAudio error: %v\n", err)
-				return fmt.Errorf("transformAudio error: %v", err.Error())
 			}
 
 			// save the name of the audio wav without the ext
 			mlp.samples[class].name = strings.Split(name, ".")[0]
 			// The desired output of the MLP is class
 			mlp.samples[class].desired = class
-			copy(mlp.samples[class].transform, transform)
+			copy(mlp.samples[class].audio, bufFlt.Data[bounds[0].start:bounds[0].start+mlp.nsamples])
+			// zero the unused samples
+			for i := mlp.nsamples; i < transformSize; i++ {
+				mlp.samples[class].audio[i] = 0.0
+			}
+
+			// normalize the audio to (-1, 1), remove the mean
+			if err := mlp.normalizeAudio(mlp.samples[class].audio); err != nil {
+				fmt.Printf("normalizeAudio error: %s\n", err.Error())
+				return fmt.Errorf("normalizeAudio error: %v", err)
+			}
+
 			class++
 		}
 	}
@@ -579,10 +580,6 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 		return nil, fmt.Errorf("epochs int conversion error: %s", err.Error())
 	}
 
-	// Fixed FFT parameters for training using the STFT
-	fftWindow := "Rectangle"
-	fftSize := transformFFTSize
-
 	text := r.FormValue("window")
 	if len(text) == 0 {
 		return nil, fmt.Errorf("select Threshold and Window from the lists")
@@ -609,8 +606,6 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 		epochs:       epochs,
 		learningRate: learningRate,
 		momentum:     momentum,
-		fftSize:      fftSize,
-		fftWindow:    fftWindow,
 		plot:         plot,
 		Endpoints: Endpoints{
 			ymin: math.MaxFloat64,
@@ -619,18 +614,19 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 			xmax: float64(epochs - 1)},
 		samples:    make([]Sample, classes),
 		words:      make([]string, 0),
+		msgSent:    make([]string, 0),
 		wordWindow: window,
 		dbLevel:    dbLevel,
 	}
 	for i := range mlp.samples {
-		mlp.samples[i].transform = make([]float64, transformSize/2)
+		mlp.samples[i].audio = make([]float64, transformSize)
 	}
 
 	// construct link that holds the weights and weight deltas
 	mlp.link = make([][]Link, hiddenLayers+1)
 
 	// input layer
-	mlp.link[0] = make([]Link, (fftSize/2+1)*layerDepth)
+	mlp.link[0] = make([]Link, (transformSize+1)*layerDepth)
 
 	// outer layer nodes
 	olnodes := int(math.Ceil(math.Log2(float64(classes))))
@@ -647,7 +643,7 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 	mlp.node = make([][]Node, hiddenLayers+2)
 
 	// input layer
-	mlp.node[0] = make([]Node, fftSize/2+1)
+	mlp.node[0] = make([]Node, transformSize+1)
 	// set first node in the layer (bias) to 1
 	mlp.node[0][0].y = 1.0
 
@@ -852,9 +848,9 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer f.Close()
 		// save MLP parameters
-		fmt.Fprintf(f, "%d,%d,%d,%d,%f,%f,%d,%s,%d,%d\n",
+		fmt.Fprintf(f, "%d,%d,%d,%d,%f,%f,%d,%d\n",
 			mlp.epochs, mlp.hiddenLayers, mlp.layerDepth, classes, mlp.learningRate,
-			mlp.momentum, mlp.fftSize, mlp.fftWindow, mlp.wordWindow, mlp.dbLevel)
+			mlp.momentum, mlp.wordWindow, mlp.dbLevel)
 		// save weights
 		// save first layer, one weight per line because too long to scan in
 		for _, node := range mlp.link[0] {
@@ -959,6 +955,33 @@ func (mlp *MLP) findWords(data []float64) ([]Bound, error) {
 	return bounds, nil
 }
 
+// normalizeAudio removes the mean and constrains the values to (-1,1)
+func (mlp *MLP) normalizeAudio(audio []float64) error {
+
+	// find the mean and remove it from audio
+	sum := 0.0
+	for i := 0; i < mlp.nsamples; i++ {
+		sum += audio[i]
+	}
+	mean := sum / float64(mlp.nsamples)
+	max := -math.MaxFloat64
+
+	// remove the mean and find the maximum
+	for i := range audio {
+		audio[i] -= mean
+		mag := math.Abs(audio[i])
+		if mag > max {
+			max = mag
+		}
+	}
+
+	// normalize the audio to (-1, 1)
+	for i := range audio {
+		audio[i] /= max
+	}
+	return nil
+}
+
 // Classify test examples and display test results
 func (mlp *MLP) runClassification() error {
 
@@ -984,6 +1007,14 @@ func (mlp *MLP) runClassification() error {
 	//fmt.Printf("%s samples = %d\n", filename, n)
 	mlp.nsamples = n
 
+	// Read the Metadata Subject containing the message
+	if len(mlp.msgSent) == 0 {
+		dec.ReadMetadata()
+		if dec.Metadata != nil {
+			mlp.msgSent = strings.Split(dec.Metadata.Subject, " ")
+		}
+	}
+
 	// loop over fltBuf and find the word boundaries
 	bounds, err := mlp.findWords(bufFlt.Data)
 	if err != nil {
@@ -991,26 +1022,31 @@ func (mlp *MLP) runClassification() error {
 		return fmt.Errorf("findWords error: %s", err.Error())
 	}
 
-	transform := make([]float64, transformSize/2)
-	// Loop over bounds and transformAudio for each word found in the test message
-	// Propagate forward and classify the word's PSD
+	// Loop over bounds and process each word found in the test message
+	// Propagate forward and classify the word
 	// Insert the class in mlp.words using mlp.samples[class].name
 	for _, bound := range bounds {
-		// calculate the transform using Bartlett's variant of the Periodogram
-		// and the short-time Fourier transform
 		fmt.Printf("bound.start = %.3f, bound.stop = %.3f\n", float64(bound.start)*.000125, float64(bound.stop)*.000125)
 		mlp.nsamples = bound.stop - bound.start
 		if mlp.nsamples > transformSize {
 			//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, transformSize)
 			mlp.nsamples = transformSize
 		}
-		err = mlp.transformAudio(bufFlt.Data[bound.start:bound.stop], transform)
-		if err != nil {
-			fmt.Printf("transformAudio error: %v\n", err)
-			return fmt.Errorf("transformAudio error: %v", err.Error())
+
+		audio := make([]float64, transformSize)
+		copy(audio, bufFlt.Data[bound.start:bound.start+mlp.nsamples])
+		// zero the unused samples
+		for i := mlp.nsamples; i < transformSize; i++ {
+			audio[i] = 0.0
 		}
 
-		samp := Sample{desired: 0, transform: transform, name: ""}
+		// normalize the audio to (-1, 1), remove the mean
+		if err := mlp.normalizeAudio(audio); err != nil {
+			fmt.Printf("normalizeAudio error: %s\n", err.Error())
+			return fmt.Errorf("normalizeAudio error: %v", err)
+		}
+
+		samp := Sample{desired: 0, audio: audio, name: ""}
 		err := mlp.propagateForward(samp)
 		if err != nil {
 			return fmt.Errorf("forward propagation error: %s", err.Error())
@@ -1023,14 +1059,13 @@ func (mlp *MLP) runClassification() error {
 	mlp.nsamples = n
 
 	mlp.plot.TestResults = strings.Join(mlp.words, " ")
+	mlp.plot.MsgSent = strings.Join(mlp.msgSent, " ")
 
 	mlp.plot.LearningRate = strconv.FormatFloat(mlp.learningRate, 'f', -1, 64)
 	mlp.plot.Momentum = strconv.FormatFloat(mlp.momentum, 'f', -1, 64)
 	mlp.plot.HiddenLayers = strconv.Itoa(mlp.hiddenLayers)
 	mlp.plot.LayerDepth = strconv.Itoa(mlp.layerDepth)
 	mlp.plot.Classes = strconv.Itoa(classes)
-	mlp.plot.FFTSize = strconv.Itoa(mlp.fftSize)
-	mlp.plot.FFTWindow = mlp.fftWindow
 	mlp.plot.Epochs = strconv.Itoa(mlp.epochs)
 	mlp.plot.WordWindow = strconv.Itoa(mlp.wordWindow)
 	mlp.plot.Threshold = strconv.Itoa(mlp.dbLevel)
@@ -1056,8 +1091,8 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 	line := scanner.Text()
 
 	items := strings.Split(line, ",")
-	if len(items) != 10 {
-		fmt.Printf("Testing parameters missing, should be 10, is %d\n", len(items))
+	if len(items) != 8 {
+		fmt.Printf("Testing parameters missing, should be 8, is %d\n", len(items))
 		return nil, fmt.Errorf("testing parameters missing, run Train first")
 	}
 
@@ -1095,21 +1130,13 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 		return nil, err
 	}
 
-	fftSize, err := strconv.Atoi(items[6])
-	if err != nil {
-		fmt.Printf("Conversion to int of %s error: %v\n", items[6], err)
-		return nil, err
-	}
-
-	fftWindow := items[7]
-
-	window, err := strconv.Atoi(items[8])
+	window, err := strconv.Atoi(items[6])
 	if err != nil {
 		fmt.Printf("Conversion to int of 'window' error: %v\n", err)
 		return nil, err
 	}
 
-	dbLevel, err := strconv.Atoi(items[9])
+	dbLevel, err := strconv.Atoi(items[7])
 	if err != nil {
 		fmt.Printf("Conversion to int of 'threshold' error: %v\n", err)
 		return nil, err
@@ -1124,17 +1151,16 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 		learningRate: learningRate,
 		samples:      make([]Sample, 0),
 		momentum:     momentum,
-		fftSize:      fftSize,
-		fftWindow:    fftWindow,
 		words:        make([]string, 0),
+		msgSent:      make([]string, 0),
 		wordWindow:   window,
 		dbLevel:      dbLevel,
 	}
 
 	// retrieve the weights
-	// first layer, one weight per line, (fftSize/2+1)*hiddenLayers
+	// first layer, one weight per line, (transformSize+1)*hiddenLayers
 	mlp.link = make([][]Link, hiddenLayers+1)
-	nwgts := (fftSize/2 + 1) * hidLayersDepth
+	nwgts := (transformSize + 1) * hidLayersDepth
 	mlp.link[0] = make([]Link, nwgts)
 	for i := 0; i < nwgts; i++ {
 		scanner.Scan()
@@ -1172,7 +1198,7 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 	mlp.node = make([][]Node, mlp.hiddenLayers+2)
 
 	// input layer
-	mlp.node[0] = make([]Node, fftSize/2+1)
+	mlp.node[0] = make([]Node, transformSize+1)
 	// set first node in the layer (bias) to 1
 	mlp.node[0][0].y = 1.0
 
@@ -1197,6 +1223,7 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 
 // handleTesting performs pattern classification of the test data
 func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
+	vocab := []string{"barked", "bird", "cat", "dog", "lion", "meowed", "roared", "the"}
 	var (
 		plot PlotT
 		mlp  *MLP
@@ -1229,25 +1256,142 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 	// Create the audio wav file, otherwise use what is already present
 	newMsg := r.FormValue("message")
 	if newMsg == "new" {
-		fmedia, err := exec.LookPath("fmedia.exe")
-		if err != nil {
-			log.Fatal("fmedia is not available in PATH")
-		} else {
-			fmt.Printf("fmedia is available in path: %s\n", fmedia)
-			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, msgTestWav), "--until=10",
-				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-30", "--stop-dblevel=-30;1")
-			stdoutStderr, err := cmd.CombinedOutput()
+		// allocate int or float64 slices for the words, message
+		message := make([]float64, maxSamples)
+		// allow 2 seconds for each word in the vocabulary
+		word := make([]int, 2*sampleRate)
+
+		// pick random number of words, 4-8
+		nwords := 4 + rand.Intn(5)
+		// spacing between words
+		const space = 0.1 * sampleRate
+
+		// loop over the number of words
+		msgIndx := 0
+		for i := 0; i < nwords; i++ {
+			// pick a random folder audiowav0-audiowav9
+			wavdir := fmt.Sprintf("audiowav%d", rand.Intn(10))
+
+			// pick random wav file in chosen folder
+			filename := vocab[rand.Intn(8)] + ".wav"
+			mlp.msgSent = append(mlp.msgSent, strings.Split(filename, ".")[0])
+
+			// open file and audio wav decode
+			fin, err := os.Open(path.Join(dataDir, wavdir, filename))
 			if err != nil {
-				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
-				plot.Status = fmt.Sprintf("stdout, stderr error from running fmedia: %v", err.Error())
+				fmt.Printf("Open %s error: %v\n", filename, err)
+				plot.Status = fmt.Sprintf("Open file %s error: %v", filename, err.Error())
 				// Write to HTTP using template and grid
 				if err := tmplTestingMLP.Execute(w, plot); err != nil {
 					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
 				}
 				return
-			} else {
-				fmt.Printf("fmedia output: %s\n", string(stdoutStderr))
 			}
+			defer fin.Close()
+
+			dec := wav.NewDecoder(fin)
+			bufInt := audio.IntBuffer{
+				Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
+				Data:   word, SourceBitDepth: bitDepth}
+			n, err := dec.PCMBuffer(&bufInt)
+			if err != nil {
+				fmt.Printf("PCMBuffer error: %v\n", err)
+				plot.Status = fmt.Sprintf("PCMBuffer error %v", err.Error())
+				// Write to HTTP using template and grid
+				if err := tmplTestingMLP.Execute(w, plot); err != nil {
+					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+				}
+				return
+			}
+			bufFlt := bufInt.AsFloatBuffer()
+			//fmt.Printf("%s samples = %d\n", name, n)
+			mlp.nsamples = n
+
+			// loop over fltBuf and find the word boundary
+			bounds, err := mlp.findWords(bufFlt.Data)
+			if err != nil {
+				fmt.Printf("findWords error: %v", err)
+				plot.Status = fmt.Sprintf("findWords error: %v", err.Error())
+				// Write to HTTP using template and grid
+				if err := tmplTestingMLP.Execute(w, plot); err != nil {
+					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+				}
+				return
+			}
+
+			if len(bounds) != 1 {
+				fmt.Printf("found %d words in %s\n", len(bounds), filename)
+				plot.Status = fmt.Sprintf("found %d words in %s", len(bounds), filename)
+				// Write to HTTP using template and grid
+				if err := tmplTestingMLP.Execute(w, plot); err != nil {
+					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+				}
+				return
+			}
+
+			max := 0.0
+			// find the max and normalize the audio to MaxInt16
+			for i := bounds[0].start; i < bounds[0].stop; i++ {
+				val := math.Abs(bufFlt.Data[i])
+				if val > max {
+					max = val
+				}
+			}
+			for i := bounds[0].start; i < bounds[0].stop; i++ {
+				bufFlt.Data[i] *= (float64(math.MaxInt16) / max)
+			}
+
+			// Copy the word into the message
+			copy(message[msgIndx:], bufFlt.Data[bounds[0].start:bounds[0].stop])
+
+			// advance to the next word position in the messsage with space
+			msgIndx += (bounds[0].stop - bounds[0].start + space)
+		}
+
+		// audio wav encode the message and save as message.wav
+		//   create wav file
+		fout, err := os.Create(path.Join(dataDir, msgTestWav))
+		if err != nil {
+			fmt.Printf("os.Create() file %s error: %v\n", msgTestWav, err)
+			plot.Status = fmt.Sprintf("os.Create() file %s error: %v", msgTestWav, err.Error())
+			// Write to HTTP using template and grid
+			if err := tmplTestingMLP.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
+		}
+		defer fout.Close()
+
+		// create wav.Encoder
+		enc := wav.NewEncoder(fout, sampleRate, bitDepth, 1, 1)
+
+		// Insert the message sent in the Metadata of the Encoder
+		metaDataSubject := wav.Metadata{Subject: strings.Join(mlp.msgSent, " ")}
+		enc.Metadata = &metaDataSubject
+
+		// create audio.FloatBuffer
+		float64Buf := &audio.FloatBuffer{Data: message[:msgIndx], Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate}}
+
+		// create IntBuffer from FloatBuffer and pass to Encoder.Write()
+		if err := enc.Write(float64Buf.AsIntBuffer()); err != nil {
+			fmt.Printf("wav encoder write error: %v\n", err)
+			plot.Status = fmt.Sprintf("wav encoder write error: %v", err.Error())
+			// Write to HTTP using template and grid
+			if err := tmplTestingMLP.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
+		}
+
+		// close the encoder
+		if err := enc.Close(); err != nil {
+			fmt.Printf("wav encoder close error: %v\n", err)
+			plot.Status = fmt.Sprintf("wav encoder error: %v", err.Error())
+			// Write to HTTP using template and grid
+			if err := tmplTestingMLP.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
 		}
 	}
 
@@ -1503,97 +1647,6 @@ func (mlp *MLP) processTimeDomain(filename string) error {
 	return nil
 }
 
-// transformAudio converts the audio to a sequence of short-time PSDs of each word
-func (mlp *MLP) transformAudio(audio []float64, transform []float64) error {
-	// loop over 256 sample sections of the audio
-	// calculate the PSD using 256-pt FFT and check for the max,
-	// 	add zeros if necessary for incomplete sections
-	// append the 128 mag^2 PSD result to transform
-	// zero the remaining elements of transform that don't have PSD entries
-	// When all PSDs are done, normalize the transform to (-1, 1)
-
-	// Bartlett's method has no overlap of input data and uses the rectangle window
-	N := transformFFTSize
-	m := N / 2
-	bufN := make([]complex128, N)
-	transformMax := -math.MaxFloat64 // maximum PSD value
-
-	// full sections, account for partial section later
-	sections := mlp.nsamples / N
-	start := 0
-	begin := 0
-	// Loop over sections and accumulate the PSD
-	for i := 0; i < sections; i++ {
-
-		for j := 0; j < N; j++ {
-			bufN[j] = complex(audio[start+j], 0)
-		}
-
-		// Perform N-point complex FFT and append to transform
-		fourierN := fft.FFT(bufN)
-		x := cmplx.Abs(fourierN[0])
-		transform[begin] = x * x
-		for j := 1; j < m; j++ {
-			// Use positive and negative frequencies -> bufN[N-j] = bufN[-j]
-			xj := cmplx.Abs(fourierN[j])
-			xNj := cmplx.Abs(fourierN[N-j])
-			transform[begin+j] = xj*xj + xNj*xNj
-		}
-
-		// No overlap, skip to next N samples
-		start += N
-		begin += m
-	}
-
-	// left over samples if nsamples is not a multiple of FFT size
-	diff := mlp.nsamples - start
-	//fmt.Printf("left over samples = %d\n", diff)
-	if diff > 0 {
-		for j := 0; j < diff; j++ {
-			bufN[j] = complex(audio[start+j], 0)
-		}
-
-		// zero-pad the remaining samples
-		for i := diff; i < N; i++ {
-			bufN[i] = 0
-		}
-
-		// Perform N-point complex FFT and add squares to previous values in PSD
-		// Normalize the PSD with the window sum, then convert to dB with 10*log10()
-		fourierN := fft.FFT(bufN)
-		x := cmplx.Abs(fourierN[0])
-		transform[begin] = x * x
-		end := m
-		if (transformSize/2 - begin) < m {
-			end = transformSize/2 - begin
-		}
-		for j := 1; j < end; j++ {
-			// Use positive and negative frequencies -> bufN[N-j] = bufN[-j]
-			xj := cmplx.Abs(fourierN[j])
-			xNj := cmplx.Abs(fourierN[N-j])
-			transform[begin+j] = xj*xj + xNj*xNj
-		}
-		begin += end
-	}
-
-	// zero any remaining transform elements when mlp.nsamples < transformSize
-	for i := begin; i < transformSize/2; i++ {
-		transform[i] = 0.0
-	}
-
-	for i := range transform {
-		if transform[i] > transformMax {
-			transformMax = transform[i]
-		}
-	}
-	// Normalize to (-1,1), otherwise the activation function saturates
-	for i := range transform {
-		transform[i] = (transform[i]/transformMax - 0.5) * 2.0
-	}
-
-	return nil
-}
-
 // Welch's Method and Bartlett's Method variation of the Periodogram
 func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, fftWindow string, fftSize int) (float64, float64, error) {
 
@@ -1611,8 +1664,8 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, fftWindow string, f
 
 	w, ok := window[fftWindow]
 	if !ok {
-		fmt.Printf("Invalid FFT window type: %v\n", mlp.fftWindow)
-		return 0, 0, fmt.Errorf("invalid FFT window type: %v", mlp.fftWindow)
+		fmt.Printf("Invalid FFT window type: %v\n", fftWindow)
+		return 0, 0, fmt.Errorf("invalid FFT window type: %v", fftWindow)
 	}
 	sumWindow := 0.0
 	// sum the window values for PSD normalization due to windowing
@@ -1638,7 +1691,7 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, fftWindow string, f
 	var sections int
 
 	// Bartlett's method has no overlap of input data and uses the rectangle window
-	if mlp.fftWindow == "Rectangle" {
+	if fftWindow == "Rectangle" {
 		// full sections, account for partial section later
 		sections = mlp.nsamples / N
 		start := 0
@@ -2012,7 +2065,7 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			mlp = &MLP{plot: &plot, fftSize: fftSize, fftWindow: fftWindow}
+			mlp = &MLP{plot: &plot}
 
 			err = mlp.processFrequencyDomain(filepath.Join(audiowavdir, filename), fftWindow, fftSize)
 			if err != nil {

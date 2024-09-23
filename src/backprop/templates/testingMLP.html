@@ -216,12 +216,6 @@
 								</tr>
 								</tr>
 								<tr>
-									<td>FFT Window:</td>
-									<td>{{.FFTWindow}}</td>
-									<td>FFT Size:</td>
-									<td>{{.FFTSize}}</td>
-								</tr>
-								<tr>
 									<td>Word Window (ms):</td>
 									<td>{{.WordWindow}}</td>
 									<td>Threshold (dB):</td>
@@ -266,7 +260,8 @@
 						<input type="text" size="100px" id="status" name="status" value="{{.Status}}" readonly />
 					</fieldset>
 				</form>
-				<p><b>Message Entered:</b> {{.TestResults}}</p>
+				<p><b>Message Sent:</b>{{.MsgSent}}</p>
+				<p><b>Message Classified:</b> {{.TestResults}}</p>
 				<h3>******************* Vocabulary *******************</h3>
 				<div id="vocabulary-container">
 					{{range .Vocabulary}}
