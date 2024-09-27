@@ -85,7 +85,6 @@ type PlotT struct {
 	Momentum     string   // previous weight update scaling factor
 	Epochs       string   // number of epochs
 	TestResults  string   // classified test message
-	MsgSent      string   // actual message sent
 	FFTSize      string   // 8192, 4098, 2048, 1024
 	FFTWindow    string   // Bartlett, Welch, Hamming, Hanning, Rectangle
 	TimeDomain   bool     // plot time domain, otherwise plot frequency domain
@@ -141,7 +140,6 @@ type MLP struct {
 	desired      []float64 // desired output of the sample
 	layerDepth   int       // hidden layer number of nodes
 	words        []string  // classified words in test message
-	msgSent      []string  // actual message sent
 	wordWindow   int       // message word window to accumulate audio level
 	dbLevel      int       // message word audio level to determine start
 }
@@ -469,8 +467,8 @@ func (mlp *MLP) createExamples(wavdir string) error {
 			}
 
 			if len(bounds) != 1 {
-				fmt.Printf("found %d words in %s\n", len(bounds), name)
-				return fmt.Errorf("found %d words in %s", len(bounds), name)
+				fmt.Printf("found %d words in %s\n", len(bounds), path.Join(wavdir, name))
+				return fmt.Errorf("found %d words in %s", len(bounds), path.Join(wavdir, name))
 			}
 
 			mlp.nsamples = bounds[0].stop - bounds[0].start
@@ -483,10 +481,10 @@ func (mlp *MLP) createExamples(wavdir string) error {
 			mlp.samples[class].name = strings.Split(name, ".")[0]
 			// The desired output of the MLP is class
 			mlp.samples[class].desired = class
-			copy(mlp.samples[class].audio, bufFlt.Data[bounds[0].start:bounds[0].start+mlp.nsamples])
-			// zero the unused samples
-			for i := mlp.nsamples; i < transformSize; i++ {
-				mlp.samples[class].audio[i] = 0.0
+
+			// repeat the word as necessary to fill the audio slice
+			for i := 0; i < transformSize; i++ {
+				mlp.samples[class].audio[i] = bufFlt.Data[bounds[0].start+i%mlp.nsamples]
 			}
 
 			// normalize the audio to (-1, 1), remove the mean
@@ -614,7 +612,6 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 			xmax: float64(epochs - 1)},
 		samples:    make([]Sample, classes),
 		words:      make([]string, 0),
-		msgSent:    make([]string, 0),
 		wordWindow: window,
 		dbLevel:    dbLevel,
 	}
@@ -884,7 +881,7 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 func (mlp *MLP) findWords(data []float64) ([]Bound, error) {
 
 	// prevent oscillation about threshold
-	const hystersis = 0.9
+	const hystersis = 0.8
 
 	var (
 		old    float64 = 0.0
@@ -1007,14 +1004,6 @@ func (mlp *MLP) runClassification() error {
 	//fmt.Printf("%s samples = %d\n", filename, n)
 	mlp.nsamples = n
 
-	// Read the Metadata Subject containing the message
-	if len(mlp.msgSent) == 0 {
-		dec.ReadMetadata()
-		if dec.Metadata != nil {
-			mlp.msgSent = strings.Split(dec.Metadata.Subject, " ")
-		}
-	}
-
 	// loop over fltBuf and find the word boundaries
 	bounds, err := mlp.findWords(bufFlt.Data)
 	if err != nil {
@@ -1022,6 +1011,7 @@ func (mlp *MLP) runClassification() error {
 		return fmt.Errorf("findWords error: %s", err.Error())
 	}
 
+	audio := make([]float64, transformSize)
 	// Loop over bounds and process each word found in the test message
 	// Propagate forward and classify the word
 	// Insert the class in mlp.words using mlp.samples[class].name
@@ -1033,11 +1023,9 @@ func (mlp *MLP) runClassification() error {
 			mlp.nsamples = transformSize
 		}
 
-		audio := make([]float64, transformSize)
-		copy(audio, bufFlt.Data[bound.start:bound.start+mlp.nsamples])
-		// zero the unused samples
-		for i := mlp.nsamples; i < transformSize; i++ {
-			audio[i] = 0.0
+		// repeat the word as necessary to fill the audio slice
+		for i := 0; i < transformSize; i++ {
+			audio[i] = bufFlt.Data[bound.start+i%mlp.nsamples]
 		}
 
 		// normalize the audio to (-1, 1), remove the mean
@@ -1059,7 +1047,6 @@ func (mlp *MLP) runClassification() error {
 	mlp.nsamples = n
 
 	mlp.plot.TestResults = strings.Join(mlp.words, " ")
-	mlp.plot.MsgSent = strings.Join(mlp.msgSent, " ")
 
 	mlp.plot.LearningRate = strconv.FormatFloat(mlp.learningRate, 'f', -1, 64)
 	mlp.plot.Momentum = strconv.FormatFloat(mlp.momentum, 'f', -1, 64)
@@ -1152,7 +1139,6 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 		samples:      make([]Sample, 0),
 		momentum:     momentum,
 		words:        make([]string, 0),
-		msgSent:      make([]string, 0),
 		wordWindow:   window,
 		dbLevel:      dbLevel,
 	}
@@ -1221,9 +1207,8 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 	return &mlp, nil
 }
 
-// handleTesting performs pattern classification of the test data
+// handleTestingMLP performs pattern classification of the test data
 func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
-	vocab := []string{"barked", "bird", "cat", "dog", "lion", "meowed", "roared", "the"}
 	var (
 		plot PlotT
 		mlp  *MLP
@@ -1256,142 +1241,25 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 	// Create the audio wav file, otherwise use what is already present
 	newMsg := r.FormValue("message")
 	if newMsg == "new" {
-		// allocate int or float64 slices for the words, message
-		message := make([]float64, maxSamples)
-		// allow 2 seconds for each word in the vocabulary
-		word := make([]int, 2*sampleRate)
-
-		// pick random number of words, 4-8
-		nwords := 4 + rand.Intn(5)
-		// spacing between words
-		const space = 0.1 * sampleRate
-
-		// loop over the number of words
-		msgIndx := 0
-		for i := 0; i < nwords; i++ {
-			// pick a random folder audiowav0-audiowav9
-			wavdir := fmt.Sprintf("audiowav%d", rand.Intn(10))
-
-			// pick random wav file in chosen folder
-			filename := vocab[rand.Intn(8)] + ".wav"
-			mlp.msgSent = append(mlp.msgSent, strings.Split(filename, ".")[0])
-
-			// open file and audio wav decode
-			fin, err := os.Open(path.Join(dataDir, wavdir, filename))
-			if err != nil {
-				fmt.Printf("Open %s error: %v\n", filename, err)
-				plot.Status = fmt.Sprintf("Open file %s error: %v", filename, err.Error())
-				// Write to HTTP using template and grid
-				if err := tmplTestingMLP.Execute(w, plot); err != nil {
-					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-				}
-				return
-			}
-			defer fin.Close()
-
-			dec := wav.NewDecoder(fin)
-			bufInt := audio.IntBuffer{
-				Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
-				Data:   word, SourceBitDepth: bitDepth}
-			n, err := dec.PCMBuffer(&bufInt)
-			if err != nil {
-				fmt.Printf("PCMBuffer error: %v\n", err)
-				plot.Status = fmt.Sprintf("PCMBuffer error %v", err.Error())
-				// Write to HTTP using template and grid
-				if err := tmplTestingMLP.Execute(w, plot); err != nil {
-					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-				}
-				return
-			}
-			bufFlt := bufInt.AsFloatBuffer()
-			//fmt.Printf("%s samples = %d\n", name, n)
-			mlp.nsamples = n
-
-			// loop over fltBuf and find the word boundary
-			bounds, err := mlp.findWords(bufFlt.Data)
-			if err != nil {
-				fmt.Printf("findWords error: %v", err)
-				plot.Status = fmt.Sprintf("findWords error: %v", err.Error())
-				// Write to HTTP using template and grid
-				if err := tmplTestingMLP.Execute(w, plot); err != nil {
-					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-				}
-				return
-			}
-
-			if len(bounds) != 1 {
-				fmt.Printf("found %d words in %s\n", len(bounds), filename)
-				plot.Status = fmt.Sprintf("found %d words in %s", len(bounds), filename)
-				// Write to HTTP using template and grid
-				if err := tmplTestingMLP.Execute(w, plot); err != nil {
-					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-				}
-				return
-			}
-
-			max := 0.0
-			// find the max and normalize the audio to MaxInt16
-			for i := bounds[0].start; i < bounds[0].stop; i++ {
-				val := math.Abs(bufFlt.Data[i])
-				if val > max {
-					max = val
-				}
-			}
-			for i := bounds[0].start; i < bounds[0].stop; i++ {
-				bufFlt.Data[i] *= (float64(math.MaxInt16) / max)
-			}
-
-			// Copy the word into the message
-			copy(message[msgIndx:], bufFlt.Data[bounds[0].start:bounds[0].stop])
-
-			// advance to the next word position in the messsage with space
-			msgIndx += (bounds[0].stop - bounds[0].start + space)
-		}
-
-		// audio wav encode the message and save as message.wav
-		//   create wav file
-		fout, err := os.Create(path.Join(dataDir, msgTestWav))
+		fmedia, err := exec.LookPath("fmedia.exe")
 		if err != nil {
-			fmt.Printf("os.Create() file %s error: %v\n", msgTestWav, err)
-			plot.Status = fmt.Sprintf("os.Create() file %s error: %v", msgTestWav, err.Error())
-			// Write to HTTP using template and grid
-			if err := tmplTestingMLP.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			log.Fatal("fmedia is not available in PATH")
+		} else {
+			fmt.Printf("fmedia is available in path: %s\n", fmedia)
+			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, msgTestWav), "--until=10",
+				"--format=int16", "--channel=mono", "--rate=8000", "-y", "--start-dblevel=-50", "--stop-dblevel=-30;1")
+			stdoutStderr, err := cmd.CombinedOutput()
+			if err != nil {
+				fmt.Printf("stdout, stderr error from running fmedia: %v", err.Error())
+				plot.Status = fmt.Sprintf("stdout, stderr error from running fmedia: %v", err.Error())
+				// Write to HTTP using template and grid
+				if err := tmplTestingMLP.Execute(w, plot); err != nil {
+					log.Fatalf("Write to HTTP output using template with error: %v", err)
+				}
+				return
+			} else {
+				fmt.Printf("fmedia output: %s\n", string(stdoutStderr))
 			}
-			return
-		}
-		defer fout.Close()
-
-		// create wav.Encoder
-		enc := wav.NewEncoder(fout, sampleRate, bitDepth, 1, 1)
-
-		// Insert the message sent in the Metadata of the Encoder
-		metaDataSubject := wav.Metadata{Subject: strings.Join(mlp.msgSent, " ")}
-		enc.Metadata = &metaDataSubject
-
-		// create audio.FloatBuffer
-		float64Buf := &audio.FloatBuffer{Data: message[:msgIndx], Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate}}
-
-		// create IntBuffer from FloatBuffer and pass to Encoder.Write()
-		if err := enc.Write(float64Buf.AsIntBuffer()); err != nil {
-			fmt.Printf("wav encoder write error: %v\n", err)
-			plot.Status = fmt.Sprintf("wav encoder write error: %v", err.Error())
-			// Write to HTTP using template and grid
-			if err := tmplTestingMLP.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-			}
-			return
-		}
-
-		// close the encoder
-		if err := enc.Close(); err != nil {
-			fmt.Printf("wav encoder close error: %v\n", err)
-			plot.Status = fmt.Sprintf("wav encoder error: %v", err.Error())
-			// Write to HTTP using template and grid
-			if err := tmplTestingMLP.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-			}
-			return
 		}
 	}
 
@@ -2114,7 +1982,7 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("fmedia is available in path: %s\n", fmedia)
 			// filename includes the audiowav folder; eg.,  audiowavX/cat.wav, were X = 0, 1, 2, ...
 			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, filename), "--until=5",
-				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-30", "--stop-dblevel=-20;1")
+				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-50", "--stop-dblevel=-20;1")
 			stdoutStderr, err := cmd.CombinedOutput()
 			if err != nil {
 				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
