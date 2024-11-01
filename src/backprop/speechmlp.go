@@ -60,37 +60,37 @@ const (
 	b                    = 2.0 / 3.0                      // activation function const
 	K1                   = b / a
 	K2                   = a * a
-	dataDir              = "data/"       // directory for the weights and audio wav files
-	maxSamples           = 40000         // max audio wav samples = 5 sec * sampleRate
-	classes              = 8             // number of audio wav files to classify
-	rows                 = 300           // rows in canvas
-	cols                 = 300           // columns in canvas
-	sampleRate           = 8000          // Hz or samples/sec
-	twoPi                = 2.0 * math.Pi // 2Pi
-	bitDepth             = 16            // audio wav encoder/decoder sample size
-	msgTestWav           = "message.wav" // Test message wav file
-	transformSize        = 6000          // .75 sec * 8000 samples/sec limits the word size
+	dataDir              = "data/"        // directory for the weights and audio wav files
+	classes              = 8              // number of audio wav files to classify
+	rows                 = 300            // rows in canvas
+	cols                 = 300            // columns in canvas
+	sampleRate           = 8000           // Hz or samples/sec
+	maxSamples           = 2 * sampleRate // max audio wav samples = 2 sec * sampleRate
+	twoPi                = 2.0 * math.Pi  // 2Pi
+	bitDepth             = 16             // audio wav encoder/decoder sample size
+	msgTestWav           = "message.wav"  // Test message wav file
 )
 
 // Type to contain all the HTML template actions
 type PlotT struct {
-	Grid         []string // plotting grid
-	Status       string   // status of the plot
-	Xlabel       []string // x-axis labels
-	Ylabel       []string // y-axis labels
-	HiddenLayers string   // number of hidden layers
-	LayerDepth   string   // number of Nodes in hidden layers
-	Classes      string   // constant number of classes = 32
-	LearningRate string   // size of weight update for each iteration
-	Momentum     string   // previous weight update scaling factor
-	Epochs       string   // number of epochs
-	TestResults  string   // classified test message
-	FFTSize      string   // 8192, 4098, 2048, 1024
-	FFTWindow    string   // Bartlett, Welch, Hamming, Hanning, Rectangle
-	TimeDomain   bool     // plot time domain, otherwise plot frequency domain
-	Vocabulary   []string // vocabulary for the message
-	WordWindow   string   // vocabulary word size for start/stop determination
-	Threshold    string   // dB level for start/stop determination
+	Grid           []string // plotting grid
+	Status         string   // status of the plot
+	Xlabel         []string // x-axis labels
+	Ylabel         []string // y-axis labels
+	HiddenLayers   string   // number of hidden layers
+	LayerDepth     string   // number of Nodes in hidden layers
+	Classes        string   // constant number of classes = 32
+	LearningRate   string   // size of weight update for each iteration
+	Momentum       string   // previous weight update scaling factor
+	Epochs         string   // number of epochs
+	TestResults    string   // classified test message
+	FFTSize        string   // 8192, 4098, 2048, 1024
+	FFTWindow      string   // Bartlett, Welch, Hamming, Hanning, Rectangle
+	TimeDomain     bool     // plot time domain, otherwise plot frequency domain
+	Vocabulary     []string // vocabulary for the message
+	WordWindow     string   // vocabulary word size for start/stop determination
+	Threshold      string   // dB level for start/stop determination
+	PredictorOrder string   // FIR predictor order
 }
 
 // Type to hold the minimum and maximum data values of the MSE in the Learning Curve
@@ -115,9 +115,10 @@ type Link struct {
 
 // training examples
 type Sample struct {
-	name    string    // audio wav frequency content
-	desired int       // numerical class of the audio wav file
-	audio   []float64 // audio from WAV file
+	name     string    // audio wav frequency content
+	desired  int       // numerical class of the audio wav file
+	audio    []float64 // audio from WAV file
+	nsamples int       // number of audio samples
 }
 
 type Bound struct {
@@ -126,22 +127,23 @@ type Bound struct {
 
 // Primary data structure for holding the MLP Backprop state
 type MLP struct {
-	plot         *PlotT   // data to be distributed in the HTML template
-	Endpoints             // embedded struct
-	link         [][]Link // links in the graph
-	node         [][]Node // nodes in the graph
-	samples      []Sample
-	nsamples     int       // number of audio wav samples
-	mse          []float64 // mean square error in output layer per epoch used in Learning Curve
-	epochs       int       // number of epochs
-	learningRate float64   // learning rate parameter
-	momentum     float64   // delta weight scale constant
-	hiddenLayers int       // number of hidden layers
-	desired      []float64 // desired output of the sample
-	layerDepth   int       // hidden layer number of nodes
-	words        []string  // classified words in test message
-	wordWindow   int       // message word window to accumulate audio level
-	dbLevel      int       // message word audio level to determine start
+	plot           *PlotT   // data to be distributed in the HTML template
+	Endpoints               // embedded struct
+	link           [][]Link // links in the graph
+	node           [][]Node // nodes in the graph
+	samples        []Sample
+	nsamples       int       // number of audio wav samples
+	mse            []float64 // mean square error in output layer per epoch used in Learning Curve
+	epochs         int       // number of epochs
+	learningRate   float64   // learning rate parameter
+	momentum       float64   // delta weight scale constant
+	hiddenLayers   int       // number of hidden layers
+	desired        []float64 // desired output of the sample
+	layerDepth     int       // hidden layer number of nodes
+	words          []string  // classified words in test message
+	wordWindow     int       // message word window to accumulate audio level
+	dbLevel        int       // message word audio level to determine start
+	predictorOrder int       // FIR predictor order
 }
 
 // Window function type
@@ -234,10 +236,43 @@ func (mlp *MLP) class2desired(class int) {
 	}
 }
 
-func (mlp *MLP) propagateForward(samp Sample) error {
-	// Assign sample to input layer, i=0 is the bias equal to one
-	for i := 1; i < len(mlp.node[0]); i++ {
-		mlp.node[0][i].y = float64(samp.audio[i-1])
+// createPredictor creates the FIR audio predictor
+func (mlp *MLP) createPredictor(samp *Sample, fir []float64) error {
+	start := mlp.predictorOrder - 1
+	stop := samp.nsamples - 1
+
+	// initialize the weights to random values in {-1, 1}
+	for i := 0; i < samp.nsamples; i++ {
+		fir[i] = 2.0 * (rand.Float64() - 0.5)
+	}
+
+	for i := start; i < stop; i++ {
+		sum := 0.0
+		// predict next sample
+		for k := 0; k < mlp.predictorOrder; k++ {
+			sum += fir[k] * samp.audio[i-k]
+		}
+		// find prediction error
+		err := samp.audio[i+1] - sum
+		// update weights with the error and input and learning rate
+		for k := 0; k < mlp.predictorOrder; k++ {
+			fir[k] += mlp.learningRate * err * samp.audio[i-k]
+		}
+	}
+	return nil
+}
+
+func (mlp *MLP) propagateForward(samp *Sample) error {
+
+	// Create FIR predictor of the audio
+	fir := make([]float64, mlp.predictorOrder)
+	if err := mlp.createPredictor(samp, fir); err != nil {
+		fmt.Printf("createPredictor error: %v\n", err.Error())
+		return fmt.Errorf("createPredictor error: %v", err)
+	}
+	// Assign fir predictor to input layer, i=0 is the bias equal to one
+	for i := 1; i < mlp.predictorOrder; i++ {
+		mlp.node[0][i].y = float64(fir[i-1])
 	}
 
 	// calculate desired from the class
@@ -356,8 +391,8 @@ func (mlp *MLP) runEpochs() error {
 	// input layer
 	// initialize the wgt and wgtDelta randomly, zero mean, normalize by fan-in
 	for i := range mlp.link[0] {
-		mlp.link[0][i].wgt = 2.0 * (rand.ExpFloat64() - .5) / float64(transformSize+1)
-		mlp.link[0][i].wgtDelta = 2.0 * (rand.ExpFloat64() - .5) / float64(transformSize+1)
+		mlp.link[0][i].wgt = 2.0 * (rand.ExpFloat64() - .5) / float64(maxSamples+1)
+		mlp.link[0][i].wgtDelta = 2.0 * (rand.ExpFloat64() - .5) / float64(maxSamples+1)
 	}
 
 	// output layer links
@@ -380,6 +415,7 @@ func (mlp *MLP) runEpochs() error {
 			readOrder[i], readOrder[j] = readOrder[j], readOrder[i]
 		})
 
+		// choose the wave directory
 		for _, val := range readOrder {
 			wavdir := filepath.Join(dataDir, fmt.Sprintf("audiowav%d", val))
 			if err := mlp.createExamples(wavdir); err != nil {
@@ -387,15 +423,15 @@ func (mlp *MLP) runEpochs() error {
 				return fmt.Errorf("createExamples error: %v", err.Error())
 			}
 
-			// Shuffle training exmaples
+			// Shuffle training examples
 			rand.Shuffle(len(mlp.samples), func(i, j int) {
 				mlp.samples[i], mlp.samples[j] = mlp.samples[j], mlp.samples[i]
 			})
 
-			// Loop over the training examples
+			// Loop over the training examples in chosen directory
 			for _, samp := range mlp.samples {
 				// Forward Propagation
-				err := mlp.propagateForward(samp)
+				err := mlp.propagateForward(&samp)
 				if err != nil {
 					return fmt.Errorf("forward propagation error: %s", err.Error())
 				}
@@ -432,6 +468,7 @@ func (mlp *MLP) createExamples(wavdir string) error {
 
 	// Each audio wav file is a separate audio class
 	class := 0
+	data := make([]int, maxSamples)
 	for _, dirEntry := range files {
 		name := dirEntry.Name()
 		if filepath.Ext(name) == ".wav" {
@@ -449,7 +486,7 @@ func (mlp *MLP) createExamples(wavdir string) error {
 			dec := wav.NewDecoder(f)
 			bufInt := audio.IntBuffer{
 				Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
-				Data:   make([]int, maxSamples), SourceBitDepth: bitDepth}
+				Data:   data, SourceBitDepth: bitDepth}
 			n, err := dec.PCMBuffer(&bufInt)
 			if err != nil {
 				fmt.Printf("PCMBuffer error: %v\n", err)
@@ -459,22 +496,18 @@ func (mlp *MLP) createExamples(wavdir string) error {
 			//fmt.Printf("%s samples = %d\n", name, n)
 			mlp.nsamples = n
 
-			// loop over fltBuf and find the word boundary
+			// loop over fltBuf and find the speech bounds
 			bounds, err := mlp.findWords(bufFlt.Data)
 			if err != nil {
 				fmt.Printf("findWords error: %v", err)
 				return fmt.Errorf("findWords error: %s", err.Error())
 			}
 
-			if len(bounds) != 1 {
-				fmt.Printf("found %d words in %s\n", len(bounds), path.Join(wavdir, name))
-				return fmt.Errorf("found %d words in %s", len(bounds), path.Join(wavdir, name))
-			}
-
-			mlp.nsamples = bounds[0].stop - bounds[0].start
-			if mlp.nsamples > transformSize {
-				//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, transformSize)
-				mlp.nsamples = transformSize
+			// Remove audio that doesn't contain speech
+			mlp.samples[class].nsamples = bounds[len(bounds)-1].stop - bounds[0].start
+			if mlp.samples[class].nsamples > maxSamples {
+				//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, maxSamples)
+				mlp.samples[class].nsamples = maxSamples
 			}
 
 			// save the name of the audio wav without the ext
@@ -482,13 +515,13 @@ func (mlp *MLP) createExamples(wavdir string) error {
 			// The desired output of the MLP is class
 			mlp.samples[class].desired = class
 
-			// repeat the word as necessary to fill the audio slice
-			for i := 0; i < transformSize; i++ {
-				mlp.samples[class].audio[i] = bufFlt.Data[bounds[0].start+i%mlp.nsamples]
+			// save the piece of the audio slice that contains speech
+			for i := 0; i < mlp.samples[class].nsamples; i++ {
+				mlp.samples[class].audio[i] = bufFlt.Data[bounds[0].start+i]
 			}
 
 			// normalize the audio to (-1, 1), remove the mean
-			if err := mlp.normalizeAudio(mlp.samples[class].audio); err != nil {
+			if err := mlp.normalizeAudio(mlp.samples[class].audio, mlp.samples[class].nsamples); err != nil {
 				fmt.Printf("normalizeAudio error: %s\n", err.Error())
 				return fmt.Errorf("normalizeAudio error: %v", err)
 			}
@@ -578,24 +611,31 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 		return nil, fmt.Errorf("epochs int conversion error: %s", err.Error())
 	}
 
-	text := r.FormValue("window")
-	if len(text) == 0 {
+	txt = r.FormValue("window")
+	if len(txt) == 0 {
 		return nil, fmt.Errorf("select Threshold and Window from the lists")
 	}
-	window, err := strconv.Atoi(text)
+	window, err := strconv.Atoi(txt)
 	if err != nil {
 		fmt.Printf("Conversion to int of 'window' error: %v\n", err)
 		return nil, err
 	}
 
-	text = r.FormValue("threshold")
-	if len(text) == 0 {
+	txt = r.FormValue("threshold")
+	if len(txt) == 0 {
 		return nil, fmt.Errorf("select Threshold and Window from the lists")
 	}
-	dbLevel, err := strconv.Atoi(text)
+	dbLevel, err := strconv.Atoi(txt)
 	if err != nil {
 		fmt.Printf("Conversion to int of 'threshold' error: %v\n", err)
 		return nil, err
+	}
+
+	txt = r.FormValue("predictororder")
+	predictorOrder, err := strconv.Atoi(txt)
+	if err != nil {
+		fmt.Printf("predictor order int conversion error: %v\n", err)
+		return nil, fmt.Errorf("predictor order int conversion error: %s", err.Error())
 	}
 
 	mlp := MLP{
@@ -610,20 +650,21 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 			ymax: -math.MaxFloat64,
 			xmin: 0,
 			xmax: float64(epochs - 1)},
-		samples:    make([]Sample, classes),
-		words:      make([]string, 0),
-		wordWindow: window,
-		dbLevel:    dbLevel,
+		samples:        make([]Sample, classes),
+		words:          make([]string, 0),
+		wordWindow:     window,
+		dbLevel:        dbLevel,
+		predictorOrder: predictorOrder,
 	}
 	for i := range mlp.samples {
-		mlp.samples[i].audio = make([]float64, transformSize)
+		mlp.samples[i].audio = make([]float64, maxSamples)
 	}
 
 	// construct link that holds the weights and weight deltas
 	mlp.link = make([][]Link, hiddenLayers+1)
 
 	// input layer
-	mlp.link[0] = make([]Link, (transformSize+1)*layerDepth)
+	mlp.link[0] = make([]Link, (predictorOrder+1)*layerDepth)
 
 	// outer layer nodes
 	olnodes := int(math.Ceil(math.Log2(float64(classes))))
@@ -640,7 +681,7 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 	mlp.node = make([][]Node, hiddenLayers+2)
 
 	// input layer
-	mlp.node[0] = make([]Node, transformSize+1)
+	mlp.node[0] = make([]Node, mlp.predictorOrder+1)
 	// set first node in the layer (bias) to 1
 	mlp.node[0][0].y = 1.0
 
@@ -845,9 +886,9 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer f.Close()
 		// save MLP parameters
-		fmt.Fprintf(f, "%d,%d,%d,%d,%f,%f,%d,%d\n",
+		fmt.Fprintf(f, "%d,%d,%d,%d,%f,%f,%d,%d,%d\n",
 			mlp.epochs, mlp.hiddenLayers, mlp.layerDepth, classes, mlp.learningRate,
-			mlp.momentum, mlp.wordWindow, mlp.dbLevel)
+			mlp.momentum, mlp.wordWindow, mlp.dbLevel, mlp.predictorOrder)
 		// save weights
 		// save first layer, one weight per line because too long to scan in
 		for _, node := range mlp.link[0] {
@@ -953,18 +994,18 @@ func (mlp *MLP) findWords(data []float64) ([]Bound, error) {
 }
 
 // normalizeAudio removes the mean and constrains the values to (-1,1)
-func (mlp *MLP) normalizeAudio(audio []float64) error {
+func (mlp *MLP) normalizeAudio(audio []float64, nsamples int) error {
 
 	// find the mean and remove it from audio
 	sum := 0.0
-	for i := 0; i < mlp.nsamples; i++ {
+	for i := 0; i < nsamples; i++ {
 		sum += audio[i]
 	}
-	mean := sum / float64(mlp.nsamples)
+	mean := sum / float64(nsamples)
 	max := -math.MaxFloat64
 
 	// remove the mean and find the maximum
-	for i := range audio {
+	for i := 0; i < nsamples; i++ {
 		audio[i] -= mean
 		mag := math.Abs(audio[i])
 		if mag > max {
@@ -973,7 +1014,7 @@ func (mlp *MLP) normalizeAudio(audio []float64) error {
 	}
 
 	// normalize the audio to (-1, 1)
-	for i := range audio {
+	for i := 0; i < nsamples; i++ {
 		audio[i] /= max
 	}
 	return nil
@@ -1004,47 +1045,45 @@ func (mlp *MLP) runClassification() error {
 	//fmt.Printf("%s samples = %d\n", filename, n)
 	mlp.nsamples = n
 
-	// loop over fltBuf and find the word boundaries
+	// loop over fltBuf and find the speech in the audio
 	bounds, err := mlp.findWords(bufFlt.Data)
 	if err != nil {
 		fmt.Printf("findWords error: %v", err)
 		return fmt.Errorf("findWords error: %s", err.Error())
 	}
 
-	audio := make([]float64, transformSize)
-	// Loop over bounds and process each word found in the test message
-	// Propagate forward and classify the word
+	// Find the bounds of the subject which may contain more than one word
+	// Propagate forward and classify the subject
 	// Insert the class in mlp.words using mlp.samples[class].name
-	for _, bound := range bounds {
-		fmt.Printf("bound.start = %.3f, bound.stop = %.3f\n", float64(bound.start)*.000125, float64(bound.stop)*.000125)
-		mlp.nsamples = bound.stop - bound.start
-		if mlp.nsamples > transformSize {
-			//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, transformSize)
-			mlp.nsamples = transformSize
-		}
-
-		// repeat the word as necessary to fill the audio slice
-		for i := 0; i < transformSize; i++ {
-			audio[i] = bufFlt.Data[bound.start+i%mlp.nsamples]
-		}
-
-		// normalize the audio to (-1, 1), remove the mean
-		if err := mlp.normalizeAudio(audio); err != nil {
-			fmt.Printf("normalizeAudio error: %s\n", err.Error())
-			return fmt.Errorf("normalizeAudio error: %v", err)
-		}
-
-		samp := Sample{desired: 0, audio: audio, name: ""}
-		err := mlp.propagateForward(samp)
-		if err != nil {
-			return fmt.Errorf("forward propagation error: %s", err.Error())
-		}
-		err = mlp.determineClass()
-		if err != nil {
-			return fmt.Errorf("determineClass error: %s", err.Error())
-		}
+	start := bounds[0].start
+	stop := bounds[len(bounds)-1].stop
+	fmt.Printf("start = %.3f, stop = %.3f\n", float64(start)*.000125, float64(stop)*.000125)
+	mlp.nsamples = stop - start
+	if mlp.nsamples > maxSamples {
+		//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, maxSamples)
+		mlp.nsamples = maxSamples
 	}
-	mlp.nsamples = n
+
+	// copy the speech part of the audio
+	for i := 0; i < mlp.nsamples; i++ {
+		bufFlt.Data[i] = bufFlt.Data[start+i]
+	}
+
+	// normalize the audio to (-1, 1), remove the mean
+	if err := mlp.normalizeAudio(bufFlt.Data, mlp.nsamples); err != nil {
+		fmt.Printf("normalizeAudio error: %s\n", err.Error())
+		return fmt.Errorf("normalizeAudio error: %v", err)
+	}
+
+	samp := Sample{desired: 0, audio: bufFlt.Data, name: "", nsamples: mlp.nsamples}
+	err = mlp.propagateForward(&samp)
+	if err != nil {
+		return fmt.Errorf("forward propagation error: %s", err.Error())
+	}
+	err = mlp.determineClass()
+	if err != nil {
+		return fmt.Errorf("determineClass error: %s", err.Error())
+	}
 
 	mlp.plot.TestResults = strings.Join(mlp.words, " ")
 
@@ -1056,6 +1095,7 @@ func (mlp *MLP) runClassification() error {
 	mlp.plot.Epochs = strconv.Itoa(mlp.epochs)
 	mlp.plot.WordWindow = strconv.Itoa(mlp.wordWindow)
 	mlp.plot.Threshold = strconv.Itoa(mlp.dbLevel)
+	mlp.plot.PredictorOrder = strconv.Itoa(mlp.predictorOrder)
 
 	mlp.plot.Status = "Testing results completed."
 
@@ -1078,8 +1118,8 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 	line := scanner.Text()
 
 	items := strings.Split(line, ",")
-	if len(items) != 8 {
-		fmt.Printf("Testing parameters missing, should be 8, is %d\n", len(items))
+	if len(items) != 9 {
+		fmt.Printf("Testing parameters missing, should be 9, is %d\n", len(items))
 		return nil, fmt.Errorf("testing parameters missing, run Train first")
 	}
 
@@ -1129,24 +1169,31 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 		return nil, err
 	}
 
+	predictorOrder, err := strconv.Atoi(items[8])
+	if err != nil {
+		fmt.Printf("Conversion to int of 'predictorOrder' error: %v\n", err)
+		return nil, err
+	}
+
 	// construct the mlp
 	mlp := MLP{
-		epochs:       epochs,
-		hiddenLayers: hiddenLayers,
-		layerDepth:   hidLayersDepth,
-		plot:         plot,
-		learningRate: learningRate,
-		samples:      make([]Sample, 0),
-		momentum:     momentum,
-		words:        make([]string, 0),
-		wordWindow:   window,
-		dbLevel:      dbLevel,
+		epochs:         epochs,
+		hiddenLayers:   hiddenLayers,
+		layerDepth:     hidLayersDepth,
+		plot:           plot,
+		learningRate:   learningRate,
+		samples:        make([]Sample, 0),
+		momentum:       momentum,
+		words:          make([]string, 0),
+		wordWindow:     window,
+		dbLevel:        dbLevel,
+		predictorOrder: predictorOrder,
 	}
 
 	// retrieve the weights
 	// first layer, one weight per line, (transformSize+1)*hiddenLayers
 	mlp.link = make([][]Link, hiddenLayers+1)
-	nwgts := (transformSize + 1) * hidLayersDepth
+	nwgts := (mlp.predictorOrder + 1) * hidLayersDepth
 	mlp.link[0] = make([]Link, nwgts)
 	for i := 0; i < nwgts; i++ {
 		scanner.Scan()
@@ -1184,7 +1231,7 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 	mlp.node = make([][]Node, mlp.hiddenLayers+2)
 
 	// input layer
-	mlp.node[0] = make([]Node, transformSize+1)
+	mlp.node[0] = make([]Node, mlp.predictorOrder+1)
 	// set first node in the layer (bias) to 1
 	mlp.node[0][0].y = 1.0
 

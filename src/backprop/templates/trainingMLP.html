@@ -206,8 +206,12 @@
 									<td>
 										<input type="number" id="epochs" name="epochs" value="{{.Epochs}}" min="20" max="500" required />
 									</td>
-									<td></td>
-									<td></td>
+									<td class="align-right">
+										<label for="predictororder">Predictor Order:</label>
+									</td>
+									<td>
+										<input type="number" id="predictororder" name="predictororder" value="{{.PredictorOrder}}" min="20" max="150" required />
+									</td>
 							</table>
 							<hr />
 							<h3>Speech Parameters</h3>
