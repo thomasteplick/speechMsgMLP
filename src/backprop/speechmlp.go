@@ -242,7 +242,7 @@ func (mlp *MLP) createPredictor(samp *Sample, fir []float64) error {
 	stop := samp.nsamples - 1
 
 	// initialize the weights to random values in {-1, 1}
-	for i := 0; i < samp.nsamples; i++ {
+	for i := 0; i < mlp.predictorOrder; i++ {
 		fir[i] = 2.0 * (rand.Float64() - 0.5)
 	}
 
@@ -871,6 +871,7 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 		mlp.plot.LearningRate = strconv.FormatFloat(mlp.learningRate, 'f', 4, 64)
 		mlp.plot.Momentum = strconv.FormatFloat(mlp.momentum, 'f', 4, 64)
 		mlp.plot.Epochs = strconv.Itoa(mlp.epochs)
+		mlp.plot.PredictorOrder = strconv.Itoa(mlp.predictorOrder)
 
 		// Save hidden layers, hidden layer depth, classes, epochs, fft size, fft window,
 		// window, threshold, and weights to csv file, one layer per line
@@ -1293,11 +1294,11 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 			log.Fatal("fmedia is not available in PATH")
 		} else {
 			fmt.Printf("fmedia is available in path: %s\n", fmedia)
-			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, msgTestWav), "--until=10",
-				"--format=int16", "--channel=mono", "--rate=8000", "-y", "--start-dblevel=-50", "--stop-dblevel=-30;1")
+			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, msgTestWav), "--until=5",
+				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-50", "--stop-dblevel=-30;1")
 			stdoutStderr, err := cmd.CombinedOutput()
 			if err != nil {
-				fmt.Printf("stdout, stderr error from running fmedia: %v", err.Error())
+				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err.Error())
 				plot.Status = fmt.Sprintf("stdout, stderr error from running fmedia: %v", err.Error())
 				// Write to HTTP using template and grid
 				if err := tmplTestingMLP.Execute(w, plot); err != nil {
