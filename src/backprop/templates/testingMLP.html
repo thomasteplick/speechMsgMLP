@@ -169,11 +169,7 @@
 				<li class="links"><a href="http://127.0.0.1:8080/speechMsgMLPvocabulary">Vocabulary</a></li>
 			</ul>
 		</nav>
-		{{if .TimeDomain}}
-		  <p><b>Time Domain (sec)</b></p>
-		{{- else}}
-		  <p><b>Frequency Domain, Spectral Power Density (dB/Hz)</b></p>
-		{{- end}}
+		<p><b>{{.Domain}}</b></p>
 		<div id="outer-container">
 			<div id="ylabel-container">
 				{{range .Ylabel}}
@@ -232,9 +228,11 @@
 							<label for="newmessage">New Message</label>
 							<br />
 							<input type="radio" name="domain" value="time" id="timedomain" checked />
-							<label for="timedomain">Time Domain</label>
+							<label for="timedomain">Time Response</label>
 							<input type="radio" name="domain" value="frequency" id="frequencydomain" />
-							<label for="frequencydomain">Frequency Domain</label>
+							<label for="frequencydomain">Frequency Response</label>
+							<input type="radio" name="domain" value="predictor" id="predictordomain" />
+							<label for="predictordomain">Predictor Response</label>
 							<hr />
 							<h3>Frequency Domain Parameters</h3>
 							<p>Enter frequency domain configuration.  FFTs are averaged with 50% overlap.

@@ -86,7 +86,7 @@ type PlotT struct {
 	TestResults    string   // classified test message
 	FFTSize        string   // 8192, 4098, 2048, 1024
 	FFTWindow      string   // Bartlett, Welch, Hamming, Hanning, Rectangle
-	TimeDomain     bool     // plot time domain, otherwise plot frequency domain
+	Domain         string   // plot time domain, frequency domain, or predictor domain
 	Vocabulary     []string // vocabulary for the message
 	WordWindow     string   // vocabulary word size for start/stop determination
 	Threshold      string   // dB level for start/stop determination
@@ -144,6 +144,8 @@ type MLP struct {
 	wordWindow     int       // message word window to accumulate audio level
 	dbLevel        int       // message word audio level to determine start
 	predictorOrder int       // FIR predictor order
+	predictor      []float64 //FIR predictor output
+	domain         string    // time, frequency, or predictor plot
 }
 
 // Window function type
@@ -246,17 +248,39 @@ func (mlp *MLP) createPredictor(samp *Sample, fir []float64) error {
 		fir[i] = 2.0 * (rand.Float64() - 0.5)
 	}
 
-	for i := start; i < stop; i++ {
-		sum := 0.0
-		// predict next sample
-		for k := 0; k < mlp.predictorOrder; k++ {
-			sum += fir[k] * samp.audio[i-k]
+	if mlp.domain == "predictor" {
+		mlp.predictor = make([]float64, stop-start+1)
+		fmt.Printf("mlp.predictor length = %d\n", len(mlp.predictor))
+		j := 0
+		for i := start; i < stop; i++ {
+			sum := 0.0
+			// predict next sample
+			for k := 0; k < mlp.predictorOrder; k++ {
+				sum += fir[k] * samp.audio[i-k]
+			}
+			mlp.predictor[j] = sum
+			// find prediction error
+			err := samp.audio[i+1] - sum
+			// update weights with the error and input and learning rate
+			for k := 0; k < mlp.predictorOrder; k++ {
+				fir[k] += mlp.learningRate * err * samp.audio[i-k]
+			}
+			j++
 		}
-		// find prediction error
-		err := samp.audio[i+1] - sum
-		// update weights with the error and input and learning rate
-		for k := 0; k < mlp.predictorOrder; k++ {
-			fir[k] += mlp.learningRate * err * samp.audio[i-k]
+		// Time or Frequency Domain
+	} else {
+		for i := start; i < stop; i++ {
+			sum := 0.0
+			// predict next sample
+			for k := 0; k < mlp.predictorOrder; k++ {
+				sum += fir[k] * samp.audio[i-k]
+			}
+			// find prediction error
+			err := samp.audio[i+1] - sum
+			// update weights with the error and input and learning rate
+			for k := 0; k < mlp.predictorOrder; k++ {
+				fir[k] += mlp.learningRate * err * samp.audio[i-k]
+			}
 		}
 	}
 	return nil
@@ -1097,6 +1121,13 @@ func (mlp *MLP) runClassification() error {
 	mlp.plot.WordWindow = strconv.Itoa(mlp.wordWindow)
 	mlp.plot.Threshold = strconv.Itoa(mlp.dbLevel)
 	mlp.plot.PredictorOrder = strconv.Itoa(mlp.predictorOrder)
+	if mlp.domain == "predictor" {
+		mlp.plot.Domain = "Predictor Domain (sec)"
+	} else if mlp.domain == "frequency" {
+		mlp.plot.Domain = "Frequency Domain (dB/Hz)"
+	} else {
+		mlp.plot.Domain = "Time Domain (sec)"
+	}
 
 	mlp.plot.Status = "Testing results completed."
 
@@ -1323,6 +1354,12 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine if predictor, time or frequency domain plot
+	mlp.domain = r.FormValue("domain")
+	if len(mlp.domain) == 0 {
+		mlp.domain = "time"
+	}
+
 	// At end of all examples display TestingResults
 	// Convert classification numbers to string in Results
 	err = mlp.runClassification()
@@ -1336,39 +1373,27 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set default to time domain
-	plot.TimeDomain = true
 	// open and read the audio wav file
 	// create wav decoder, audio IntBuffer, convert to audio FloatBuffer
 	// loop over the FloatBuffer.Data and generate the Spectral Power Density
 	// fill the grid with the PSD values
 	// Option to plot time domain added.
+	// Option to plot predictor output added.
 
-	// Determine if time or frequency domain plot
-	domain := r.FormValue("domain")
-	// Time Domain
-	if domain == "frequency" {
-		plot.TimeDomain = false
-	} else {
-		plot.TimeDomain = true
-	}
-
-	if plot.TimeDomain {
-		err := mlp.processTimeDomain(msgTestWav)
+	if mlp.domain == "predictor" {
+		err = mlp.processPredictorDomain()
 		if err != nil {
-			fmt.Printf("processTimeDomain error: %v\n", err)
-			plot.Status = fmt.Sprintf("processTimeDomain error: %v", err.Error())
+			fmt.Printf("proessPredictorDomain error: %v\n", err)
+			plot.Status = fmt.Sprintf("processPredictorDomain error: %v", err.Error())
 			// Write to HTTP using template and grid
 			if err := tmplTestingMLP.Execute(w, plot); err != nil {
 				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
 			}
 			return
 		}
-		plot.Status += fmt.Sprintf("Time Domain of %s plotted.", filepath.Join(dataDir, msgTestWav))
-		// Frequency Domain
-	} else {
+		plot.Status = "Predictor Domain: FIR predictor plotted."
+	} else if mlp.domain == "frequency" {
 		fftWindow := r.FormValue("fftwindow")
-
 		txt := r.FormValue("fftsize")
 		fftSize, err := strconv.Atoi(txt)
 		if err != nil {
@@ -1391,7 +1416,20 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		plot.Status += fmt.Sprintf("Frequency Domain: PSD of %s plotted.", filepath.Join(dataDir, msgTestWav))
+		plot.Status = fmt.Sprintf("Frequency Domain: PSD of %s plotted.", filepath.Join(dataDir, msgTestWav))
+		// Domain = Time
+	} else {
+		err := mlp.processTimeDomain(msgTestWav)
+		if err != nil {
+			fmt.Printf("processTimeDomain error: %v\n", err)
+			plot.Status = fmt.Sprintf("processTimeDomain error: %v", err.Error())
+			// Write to HTTP using template and grid
+			if err := tmplTestingMLP.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
+		}
+		plot.Status = fmt.Sprintf("Time Domain of %s plotted.", filepath.Join(dataDir, msgTestWav))
 	}
 
 	// Play the audio wav if fmedia is available in the PATH environment variable
@@ -1429,6 +1467,116 @@ func (ep *Endpoints) findEndpoints(input []float64) {
 			ep.ymin = y
 		}
 	}
+}
+
+// processPredictorDomain plots the FIR predictor response
+func (mlp *MLP) processPredictorDomain() error {
+	var (
+		xscale    float64
+		yscale    float64
+		endpoints Endpoints
+	)
+
+	mlp.plot.Grid = make([]string, rows*cols)
+	mlp.plot.Xlabel = make([]string, xlabels)
+	mlp.plot.Ylabel = make([]string, ylabels)
+
+	mlp.nsamples = len(mlp.predictor)
+
+	endpoints.findEndpoints(mlp.predictor)
+	// time starts at 0 and ends at #samples*sampling period
+	endpoints.xmin = 0.0
+	// #samples*sampling period, sampling period = 1/sampleRate
+	endpoints.xmax = float64(mlp.nsamples) / float64(sampleRate)
+
+	// EP means endpoints
+	lenEPx := endpoints.xmax - endpoints.xmin
+	lenEPy := endpoints.ymax - endpoints.ymin
+	prevTime := 0.0
+	prevAmpl := mlp.predictor[0]
+
+	// Calculate scale factors for x and y
+	xscale = float64(cols-1) / (endpoints.xmax - endpoints.xmin)
+	yscale = float64(rows-1) / (endpoints.ymax - endpoints.ymin)
+
+	// This previous cell location (row,col) is on the line (visible)
+	row := int((endpoints.ymax-mlp.predictor[0])*yscale + .5)
+	col := int((0.0-endpoints.xmin)*xscale + .5)
+	mlp.plot.Grid[row*cols+col] = "online"
+
+	// Store the amplitude in the plot Grid
+	for n := 1; n < mlp.nsamples; n++ {
+		// Current time
+		currTime := float64(n) / float64(sampleRate)
+
+		// This current cell location (row,col) is on the line (visible)
+		row := int((endpoints.ymax-mlp.predictor[n])*yscale + .5)
+		col := int((currTime-endpoints.xmin)*xscale + .5)
+		mlp.plot.Grid[row*cols+col] = "online"
+
+		// Interpolate the points between previous point and current point;
+		// draw a straight line between points.
+		lenEdgeTime := math.Abs((currTime - prevTime))
+		lenEdgeAmpl := math.Abs(mlp.predictor[n] - prevAmpl)
+		ncellsTime := int(float64(cols) * lenEdgeTime / lenEPx) // number of points to interpolate in x-dim
+		ncellsAmpl := int(float64(rows) * lenEdgeAmpl / lenEPy) // number of points to interpolate in y-dim
+		// Choose the biggest
+		ncells := ncellsTime
+		if ncellsAmpl > ncells {
+			ncells = ncellsAmpl
+		}
+
+		stepTime := float64(currTime-prevTime) / float64(ncells)
+		stepAmpl := float64(mlp.predictor[n]-prevAmpl) / float64(ncells)
+
+		// loop to draw the points
+		interpTime := prevTime
+		interpAmpl := prevAmpl
+		for i := 0; i < ncells; i++ {
+			row := int((endpoints.ymax-interpAmpl)*yscale + .5)
+			col := int((interpTime-endpoints.xmin)*xscale + .5)
+			// This cell location (row,col) is on the line (visible)
+			mlp.plot.Grid[row*cols+col] = "online"
+			interpTime += stepTime
+			interpAmpl += stepAmpl
+		}
+
+		// Update the previous point with the current point
+		prevTime = currTime
+		prevAmpl = mlp.predictor[n]
+
+	}
+
+	// Set plot status if no errors
+	if len(mlp.plot.Status) == 0 {
+		mlp.plot.Status = fmt.Sprintf("%s plotted from (%.3f,%.3f) to (%.3f,%.3f)",
+			"predictor", endpoints.xmin, endpoints.ymin, endpoints.xmax, endpoints.ymax)
+	}
+
+	// Set plot status if no errors
+	if len(mlp.plot.Status) == 0 {
+		mlp.plot.Status = fmt.Sprintf("Status: Data plotted from (%.3f,%.3f) to (%.3f,%.3f)",
+			endpoints.xmin, endpoints.ymin, endpoints.xmax, endpoints.ymax)
+	}
+
+	// Construct x-axis labels
+	incr := (endpoints.xmax - endpoints.xmin) / (xlabels - 1)
+	x := endpoints.xmin
+	// First label is empty for alignment purposes
+	for i := range mlp.plot.Xlabel {
+		mlp.plot.Xlabel[i] = fmt.Sprintf("%.2f", x)
+		x += incr
+	}
+
+	// Construct the y-axis labels
+	incr = (endpoints.ymax - endpoints.ymin) / (ylabels - 1)
+	y := endpoints.ymin
+	for i := range mlp.plot.Ylabel {
+		mlp.plot.Ylabel[i] = fmt.Sprintf("%.2f", y)
+		y += incr
+	}
+
+	return nil
 }
 
 // processTimeDomain plots the time domain data from audio wav file
@@ -1535,12 +1683,6 @@ func (mlp *MLP) processTimeDomain(filename string) error {
 		// Set plot status
 		fmt.Printf("Error opening file %s: %v\n", filename, err)
 		return fmt.Errorf("error opening file %s: %v", filename, err)
-	}
-
-	// Set plot status if no errors
-	if len(mlp.plot.Status) == 0 {
-		mlp.plot.Status = fmt.Sprintf("Status: Data plotted from (%.3f,%.3f) to (%.3f,%.3f)",
-			endpoints.xmin, endpoints.ymin, endpoints.xmax, endpoints.ymax)
 	}
 
 	// Construct x-axis labels
@@ -1948,12 +2090,12 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 		domain := r.FormValue("domain")
 		// Time Domain
 		if domain == "time" {
-			plot.TimeDomain = true
+			plot.Domain = "time"
 		} else {
-			plot.TimeDomain = false
+			plot.Domain = "frequency"
 		}
 
-		if plot.TimeDomain {
+		if plot.Domain == "time" {
 			mlp = &MLP{plot: &plot}
 			err := mlp.processTimeDomain(filepath.Join(audiowavdir, filename))
 			if err != nil {
