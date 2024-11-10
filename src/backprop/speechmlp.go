@@ -60,15 +60,16 @@ const (
 	b                    = 2.0 / 3.0                      // activation function const
 	K1                   = b / a
 	K2                   = a * a
-	dataDir              = "data/"        // directory for the weights and audio wav files
-	classes              = 8              // number of audio wav files to classify
-	rows                 = 300            // rows in canvas
-	cols                 = 300            // columns in canvas
-	sampleRate           = 8000           // Hz or samples/sec
-	maxSamples           = 2 * sampleRate // max audio wav samples = 2 sec * sampleRate
-	twoPi                = 2.0 * math.Pi  // 2Pi
-	bitDepth             = 16             // audio wav encoder/decoder sample size
-	msgTestWav           = "message.wav"  // Test message wav file
+	dataDir              = "data/"         // directory for the weights and audio wav files
+	classes              = 8               // number of audio wav files to classify
+	rows                 = 300             // rows in canvas
+	cols                 = 300             // columns in canvas
+	sampleRate           = 8000            // Hz or samples/sec
+	maxSamples           = 2 * sampleRate  // max audio wav samples = 2 sec * sampleRate
+	twoPi                = 2.0 * math.Pi   // 2Pi
+	bitDepth             = 16              // audio wav encoder/decoder sample size
+	msgTestWav           = "message.wav"   // Test message/subject wav file
+	predictorWav         = "predictor.wav" // predictor output
 )
 
 // Type to contain all the HTML template actions
@@ -136,7 +137,7 @@ type MLP struct {
 	mse            []float64 // mean square error in output layer per epoch used in Learning Curve
 	epochs         int       // number of epochs
 	learningRate   float64   // learning rate parameter
-	momentum       float64   // delta weight scale constant
+	momentum       float64   // delta weight scale consta
 	hiddenLayers   int       // number of hidden layers
 	desired        []float64 // desired output of the sample
 	layerDepth     int       // hidden layer number of nodes
@@ -146,6 +147,8 @@ type MLP struct {
 	predictorOrder int       // FIR predictor order
 	predictor      []float64 //FIR predictor output
 	domain         string    // time, frequency, or predictor plot
+	audioMean      float64   // audio samples mean
+	audioMax       float64   // audio samples maximum
 }
 
 // Window function type
@@ -250,7 +253,6 @@ func (mlp *MLP) createPredictor(samp *Sample, fir []float64) error {
 
 	if mlp.domain == "predictor" {
 		mlp.predictor = make([]float64, stop-start+1)
-		fmt.Printf("mlp.predictor length = %d\n", len(mlp.predictor))
 		j := 0
 		for i := start; i < stop; i++ {
 			sum := 0.0
@@ -266,6 +268,38 @@ func (mlp *MLP) createPredictor(samp *Sample, fir []float64) error {
 				fir[k] += mlp.learningRate * err * samp.audio[i-k]
 			}
 			j++
+		}
+
+		// restore pre-normalization values of audio
+		for i, val := range mlp.predictor {
+			mlp.predictor[i] = val*mlp.audioMax + mlp.audioMean
+		}
+
+		// create wav file for predictor output
+		outF, err := os.Create(path.Join(dataDir, predictorWav))
+		if err != nil {
+			fmt.Printf("os.Create() file %s error: %v\n", predictorWav, err)
+			return fmt.Errorf("os.Create() file %s error: %v", predictorWav, err.Error())
+		}
+		defer outF.Close()
+
+		// create wav.Encoder
+		enc := wav.NewEncoder(outF, sampleRate, bitDepth, 1, 1)
+
+		// create audio.FloatBuffer
+		float64Buf := &audio.FloatBuffer{Data: mlp.predictor,
+			Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate}}
+
+		// create IntBuffer from FloatBuffer and pass to Encoder.Write()
+		if err := enc.Write(float64Buf.AsIntBuffer()); err != nil {
+			fmt.Printf("wav encoder write error: %v\n", err)
+			return fmt.Errorf("wav encoder write error %v", err.Error())
+		}
+
+		// close the encoder
+		if err := enc.Close(); err != nil {
+			fmt.Printf("wav encoder close error: %v\n", err)
+			return fmt.Errorf("wav encoder close error: %v", err.Error())
 		}
 		// Time or Frequency Domain
 	} else {
@@ -1037,11 +1071,14 @@ func (mlp *MLP) normalizeAudio(audio []float64, nsamples int) error {
 			max = mag
 		}
 	}
+	mlp.audioMean = mean
+	mlp.audioMax = max
 
 	// normalize the audio to (-1, 1)
 	for i := 0; i < nsamples; i++ {
 		audio[i] /= max
 	}
+
 	return nil
 }
 
@@ -1375,7 +1412,7 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 
 	// open and read the audio wav file
 	// create wav decoder, audio IntBuffer, convert to audio FloatBuffer
-	// loop over the FloatBuffer.Data and generate the Spectral Power Density
+	// loop over the Float Buffer data and generate the Spectral Power Density
 	// fill the grid with the PSD values
 	// Option to plot time domain added.
 	// Option to plot predictor output added.
@@ -1438,7 +1475,11 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 		log.Fatal("fmedia is not available in PATH")
 	} else {
 		fmt.Printf("fmedia is available in path: %s\n", fmedia)
-		cmd := exec.Command(fmedia, filepath.Join(dataDir, msgTestWav))
+		file := msgTestWav
+		if mlp.domain == "predictor" {
+			file = predictorWav
+		}
+		cmd := exec.Command(fmedia, filepath.Join(dataDir, file))
 		stdoutStderr, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
@@ -1551,12 +1592,6 @@ func (mlp *MLP) processPredictorDomain() error {
 	if len(mlp.plot.Status) == 0 {
 		mlp.plot.Status = fmt.Sprintf("%s plotted from (%.3f,%.3f) to (%.3f,%.3f)",
 			"predictor", endpoints.xmin, endpoints.ymin, endpoints.xmax, endpoints.ymax)
-	}
-
-	// Set plot status if no errors
-	if len(mlp.plot.Status) == 0 {
-		mlp.plot.Status = fmt.Sprintf("Status: Data plotted from (%.3f,%.3f) to (%.3f,%.3f)",
-			endpoints.xmin, endpoints.ymin, endpoints.xmax, endpoints.ymax)
 	}
 
 	// Construct x-axis labels
@@ -1903,10 +1938,6 @@ func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, fftWindow string, f
 			psdMin = PSD[i]
 		}
 	}
-	// Normalize to 1, otherwise the activation function saturates
-	for i := range PSD {
-		PSD[i] = (PSD[i]/psdMax - 0.5) * 2.0
-	}
 
 	return psdMin, psdMax, nil
 }
@@ -1974,12 +2005,13 @@ func (mlp *MLP) processFrequencyDomain(filename, fftWindow string, fftSize int) 
 		yscale = float64(rows-1) / (endpoints.ymax - endpoints.ymin)
 
 		// This previous cell location (row,col) is on the line (visible)
-		row := int((endpoints.ymax-PSD[0])*yscale + .5)
-		col := int((0.0-endpoints.xmin)*xscale + .5)
+		bin := 0
+		row := int((endpoints.ymax-PSD[bin])*yscale + .5)
+		col := int((float64(bin)-endpoints.xmin)*xscale + .5)
 		mlp.plot.Grid[row*cols+col] = "online"
 
 		// Store the PSD in the plot Grid
-		for bin := 1; bin < fftSize/2; bin++ {
+		for bin = 1; bin < fftSize/2; bin++ {
 
 			// This current cell location (row,col) is on the line (visible)
 			row := int((endpoints.ymax-PSD[bin])*yscale + .5)
@@ -2088,14 +2120,13 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 
 		// Determine if time or frequency domain plot
 		domain := r.FormValue("domain")
-		// Time Domain
-		if domain == "time" {
-			plot.Domain = "time"
+		if domain == "frequency" {
+			plot.Domain = "Frequency Domain (dB/Hz)"
 		} else {
-			plot.Domain = "frequency"
+			plot.Domain = "Time Domain (sec)"
 		}
 
-		if plot.Domain == "time" {
+		if domain == "time" {
 			mlp = &MLP{plot: &plot}
 			err := mlp.processTimeDomain(filepath.Join(audiowavdir, filename))
 			if err != nil {

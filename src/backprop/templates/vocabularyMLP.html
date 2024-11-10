@@ -157,11 +157,7 @@
 				<li class="links"><a href="http://127.0.0.1:8080/speechMsgMLPvocabulary">Vocabulary</a></li>
 			</ul>
 		</nav>
-		{{if .TimeDomain}}
-		  <p><b>Time Domain (sec)</b></p>
-		{{- else}}
-		  <p><b>Frequency Domain, Spectral Power Density (dB/Hz)</b></p>
-		{{- end}}
+		<p><b>{{.Domain}}</b></p>
 		<div id="outer-container">
 			<div id="ylabel-container">
 				{{range .Ylabel}}
