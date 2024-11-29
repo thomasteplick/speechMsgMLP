@@ -14,12 +14,13 @@ for the errors in the output to the weights in the hidden layers.
 The output layer outputs are subtracted from the desired to obtain the error.
 The user trains first and then tests.
 
-This application classifies audio wav files.  The Power Spectral Density of
-each file is calculated and the magnitude squared is the input to the MLP.
-The mean is removed and the magnitude squared is normalized to one.
-The MLP classifies the wav file based on its spectral content.  The test
-results are shown.  The user can plot the time domain or frequency domain
-of the wav file.
+This application classifies audio wav files.  The spectrogram of
+each file is calculated and the flattened spectrogram is the input to the MLP.
+The MLP classifies the wav file based on its spectral content versus time. The test
+results are shown.  The user can plot the time domain or the spectrogram
+(frequency versus time) of the wav file.  The spectrogram is a three-dimentional
+plot of the spectral power versus time.  The third dimension is a grayscale color.
+Short-time Fourier Transforms (STFT) are used to compute the FFT of 32 ms blocks of audio data.
 */
 
 package main
@@ -50,9 +51,11 @@ const (
 	fileTrainingMLP      = "templates/trainingMLP.html"   // html for training MLP
 	fileTestingMLP       = "templates/testingMLP.html"    // html for testing MLP
 	fileVocabularyMLP    = "templates/vocabularyMLP.html" // html for adding words to the vocabulary
+	fileSpectrogram      = "templates/spectrogram.html"   // html for speech time or spectrogram plots
 	patternTrainingMLP   = "/speechMsgMLP"                // http handler for training the MLP
 	patternTestingMLP    = "/speechMsgMLPtest"            // http handler for testing the MLP
 	patternVocabularyMLP = "/speechMsgMLPvocabulary"      // http handler for adding words to the vocabulary
+	patternSpectrogram   = "/speechspectrogram"           // http handler for speech spectrogram
 	xlabels              = 11                             // # labels on x axis
 	ylabels              = 11                             // # labels on y axis
 	fileweights          = "weights.csv"                  // mlp weights
@@ -60,38 +63,37 @@ const (
 	b                    = 2.0 / 3.0                      // activation function const
 	K1                   = b / a
 	K2                   = a * a
-	dataDir              = "data/"         // directory for the weights and audio wav files
-	classes              = 8               // number of audio wav files to classify
-	rows                 = 300             // rows in canvas
-	cols                 = 300             // columns in canvas
-	sampleRate           = 8000            // Hz or samples/sec
-	maxSamples           = 2 * sampleRate  // max audio wav samples = 2 sec * sampleRate
-	twoPi                = 2.0 * math.Pi   // 2Pi
-	bitDepth             = 16              // audio wav encoder/decoder sample size
-	msgTestWav           = "message.wav"   // Test message/subject wav file
-	predictorWav         = "predictor.wav" // predictor output
+	dataDir              = "data/"        // directory for the weights and audio wav files
+	classes              = 8              // number of audio wav files to classify
+	rows                 = 300            // rows in canvas
+	cols                 = 300            // columns in canvas
+	sampleRate           = 8000           // Hz or samples/sec
+	maxSamples           = 1 * sampleRate // max audio wav samples = 1 sec * sampleRate
+	twoPi                = 2.0 * math.Pi  // 2Pi
+	bitDepth             = 16             // audio wav encoder/decoder sample size
+	ncolors              = 5              // number of grayscale colors in spectrogram
+	msgTestWav           = "message.wav"  // Test message/subject wav file
 )
 
 // Type to contain all the HTML template actions
 type PlotT struct {
-	Grid           []string // plotting grid
-	Status         string   // status of the plot
-	Xlabel         []string // x-axis labels
-	Ylabel         []string // y-axis labels
-	HiddenLayers   string   // number of hidden layers
-	LayerDepth     string   // number of Nodes in hidden layers
-	Classes        string   // constant number of classes = 32
-	LearningRate   string   // size of weight update for each iteration
-	Momentum       string   // previous weight update scaling factor
-	Epochs         string   // number of epochs
-	TestResults    string   // classified test message
-	FFTSize        string   // 8192, 4098, 2048, 1024
-	FFTWindow      string   // Bartlett, Welch, Hamming, Hanning, Rectangle
-	Domain         string   // plot time domain, frequency domain, or predictor domain
-	Vocabulary     []string // vocabulary for the message
-	WordWindow     string   // vocabulary word size for start/stop determination
-	Threshold      string   // dB level for start/stop determination
-	PredictorOrder string   // FIR predictor order
+	Grid         []string // plotting grid
+	Status       string   // status of the plot
+	Xlabel       []string // x-axis labels
+	Ylabel       []string // y-axis labels
+	HiddenLayers string   // number of hidden layers
+	LayerDepth   string   // number of Nodes in hidden layers
+	Classes      string   // constant number of classes = 32
+	LearningRate string   // size of weight update for each iteration
+	Momentum     string   // previous weight update scaling factor
+	Epochs       string   // number of epochs
+	TestResults  string   // classified test message
+	FFTSize      string   // 8192, 4098, 2048, 1024
+	FFTWindow    string   // Bartlett, Welch, Hamming, Hanning, Rectangle
+	Domain       string   // plot time or spectrogra domain
+	Vocabulary   []string // vocabulary for the message
+	WordWindow   string   // vocabulary word size for start/stop determination
+	Threshold    string   // dB level for start/stop determination
 }
 
 // Type to hold the minimum and maximum data values of the MSE in the Learning Curve
@@ -116,10 +118,9 @@ type Link struct {
 
 // training examples
 type Sample struct {
-	name     string    // audio wav frequency content
-	desired  int       // numerical class of the audio wav file
-	audio    []float64 // audio from WAV file
-	nsamples int       // number of audio samples
+	name      string    // audio wav file name
+	desired   int       // numerical class of the audio wav file
+	grayscale []float64 // spectrogram grayscale
 }
 
 type Bound struct {
@@ -128,27 +129,28 @@ type Bound struct {
 
 // Primary data structure for holding the MLP Backprop state
 type MLP struct {
-	plot           *PlotT   // data to be distributed in the HTML template
-	Endpoints               // embedded struct
-	link           [][]Link // links in the graph
-	node           [][]Node // nodes in the graph
-	samples        []Sample
-	nsamples       int       // number of audio wav samples
-	mse            []float64 // mean square error in output layer per epoch used in Learning Curve
-	epochs         int       // number of epochs
-	learningRate   float64   // learning rate parameter
-	momentum       float64   // delta weight scale consta
-	hiddenLayers   int       // number of hidden layers
-	desired        []float64 // desired output of the sample
-	layerDepth     int       // hidden layer number of nodes
-	words          []string  // classified words in test message
-	wordWindow     int       // message word window to accumulate audio level
-	dbLevel        int       // message word audio level to determine start
-	predictorOrder int       // FIR predictor order
-	predictor      []float64 //FIR predictor output
-	domain         string    // time, frequency, or predictor plot
-	audioMean      float64   // audio samples mean
-	audioMax       float64   // audio samples maximum
+	plot         *PlotT   // data to be distributed in the HTML template
+	Endpoints             // embedded struct
+	link         [][]Link // links in the graph
+	node         [][]Node // nodes in the graph
+	samples      []Sample
+	nsamples     int            // number of audio wav samples
+	mse          []float64      // mean square error in output layer per epoch used in Learning Curve
+	epochs       int            // number of epochs
+	learningRate float64        // learning rate parameter
+	momentum     float64        // delta weight scale consta
+	hiddenLayers int            // number of hidden layers
+	desired      []float64      // desired output of the sample
+	layerDepth   int            // hidden layer number of nodes
+	words        []string       // classified words in test message
+	wordWindow   int            // message word window to accumulate audio level
+	dbLevel      int            // message word audio level to determine start
+	domain       string         // time or spectrogram plot
+	audioMean    float64        // audio samples mean
+	audioMax     float64        // audio samples maximum
+	grayscale    map[int]string // grayscale for spectrogram
+	fftSize      int            // FFT size for spectrogram
+	fftWindow    string         // FFT window
 }
 
 // Window function type
@@ -159,6 +161,7 @@ var (
 	tmplTrainingMLP   *template.Template
 	tmplTestingMLP    *template.Template
 	tmplVocabularyMLP *template.Template
+	tmplSpectrogram   *template.Template
 	winType           = []string{"Bartlett", "Welch", "Hamming", "Hanning", "Rectangle"}
 )
 
@@ -241,96 +244,11 @@ func (mlp *MLP) class2desired(class int) {
 	}
 }
 
-// createPredictor creates the FIR audio predictor
-func (mlp *MLP) createPredictor(samp *Sample, fir []float64) error {
-	start := mlp.predictorOrder - 1
-	stop := samp.nsamples - 1
-
-	// initialize the weights to random values in {-1, 1}
-	for i := 0; i < mlp.predictorOrder; i++ {
-		fir[i] = 2.0 * (rand.Float64() - 0.5)
-	}
-
-	if mlp.domain == "predictor" {
-		mlp.predictor = make([]float64, stop-start+1)
-		j := 0
-		for i := start; i < stop; i++ {
-			sum := 0.0
-			// predict next sample
-			for k := 0; k < mlp.predictorOrder; k++ {
-				sum += fir[k] * samp.audio[i-k]
-			}
-			mlp.predictor[j] = sum
-			// find prediction error
-			err := samp.audio[i+1] - sum
-			// update weights with the error and input and learning rate
-			for k := 0; k < mlp.predictorOrder; k++ {
-				fir[k] += mlp.learningRate * err * samp.audio[i-k]
-			}
-			j++
-		}
-
-		// restore pre-normalization values of audio
-		for i, val := range mlp.predictor {
-			mlp.predictor[i] = val*mlp.audioMax + mlp.audioMean
-		}
-
-		// create wav file for predictor output
-		outF, err := os.Create(path.Join(dataDir, predictorWav))
-		if err != nil {
-			fmt.Printf("os.Create() file %s error: %v\n", predictorWav, err)
-			return fmt.Errorf("os.Create() file %s error: %v", predictorWav, err.Error())
-		}
-		defer outF.Close()
-
-		// create wav.Encoder
-		enc := wav.NewEncoder(outF, sampleRate, bitDepth, 1, 1)
-
-		// create audio.FloatBuffer
-		float64Buf := &audio.FloatBuffer{Data: mlp.predictor,
-			Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate}}
-
-		// create IntBuffer from FloatBuffer and pass to Encoder.Write()
-		if err := enc.Write(float64Buf.AsIntBuffer()); err != nil {
-			fmt.Printf("wav encoder write error: %v\n", err)
-			return fmt.Errorf("wav encoder write error %v", err.Error())
-		}
-
-		// close the encoder
-		if err := enc.Close(); err != nil {
-			fmt.Printf("wav encoder close error: %v\n", err)
-			return fmt.Errorf("wav encoder close error: %v", err.Error())
-		}
-		// Time or Frequency Domain
-	} else {
-		for i := start; i < stop; i++ {
-			sum := 0.0
-			// predict next sample
-			for k := 0; k < mlp.predictorOrder; k++ {
-				sum += fir[k] * samp.audio[i-k]
-			}
-			// find prediction error
-			err := samp.audio[i+1] - sum
-			// update weights with the error and input and learning rate
-			for k := 0; k < mlp.predictorOrder; k++ {
-				fir[k] += mlp.learningRate * err * samp.audio[i-k]
-			}
-		}
-	}
-	return nil
-}
-
 func (mlp *MLP) propagateForward(samp *Sample) error {
 
-	// Create FIR predictor of the audio
-	fir := make([]float64, mlp.predictorOrder)
-	if err := mlp.createPredictor(samp, fir); err != nil {
-		fmt.Printf("createPredictor error: %v\n", err.Error())
-		return fmt.Errorf("createPredictor error: %v", err)
-	}
-	// Assign fir predictor to input layer, i=0 is the bias equal to one
-	for i := 1; i < mlp.predictorOrder; i++ {
-		mlp.node[0][i].y = float64(fir[i-1])
+	// Assign spectrogram to input layer, i=0 is the bias equal to one
+	for i, val := range samp.grayscale {
+		mlp.node[0][i+1].y = val
 	}
 
 	// calculate desired from the class
@@ -436,9 +354,9 @@ func (mlp *MLP) propagateBackward() error {
 // runEpochs performs forward and backward propagation over each sample
 func (mlp *MLP) runEpochs() error {
 
-	// number of directories containing the training wav files
+	// number of directories containing the training spectrogram files
 	const ndirs int = 10
-	// read order of the audio wav file directories
+	// read order of the audio spectrogram file directories
 	readOrder := make([]int, ndirs)
 	for i := 0; i < ndirs; i++ {
 		readOrder[i] = i
@@ -466,17 +384,33 @@ func (mlp *MLP) runEpochs() error {
 			mlp.link[lay][link].wgtDelta = 2.0 * (rand.Float64() - .5) / float64(mlp.layerDepth)
 		}
 	}
+
+	// Create spectrogram files from the audio wav files if they don't exist
+	spectrogramDir := filepath.Join(dataDir, "spectrogram0")
+	files, err := os.ReadDir(spectrogramDir)
+	if err != nil {
+		fmt.Printf("ReadDir for %s error: %v\n", spectrogramDir, err)
+		return fmt.Errorf("ReadDir for %s error %v", spectrogramDir, err.Error())
+	}
+	if len(files) == 0 {
+		err = mlp.createSpectrograms()
+		if err != nil {
+			fmt.Printf("createSpectrograms error: %v\n", err.Error())
+			return fmt.Errorf("createSpectrograms error: %v", err)
+		}
+	}
+
 	for n := 0; n < mlp.epochs; n++ {
-		// loop over the audio wav file directories
-		// shuffle the audio wav file directories read order
+		// loop over the spectrogram file directories
+		// shuffle the spectrogram file directories read order
 		rand.Shuffle(len(readOrder), func(i, j int) {
 			readOrder[i], readOrder[j] = readOrder[j], readOrder[i]
 		})
 
-		// choose the wave directory
+		// choose the spectrogram directory
 		for _, val := range readOrder {
-			wavdir := filepath.Join(dataDir, fmt.Sprintf("audiowav%d", val))
-			if err := mlp.createExamples(wavdir); err != nil {
+			spectrogramDir := filepath.Join(dataDir, fmt.Sprintf("spectrogram%d", val))
+			if err := mlp.createExamples(spectrogramDir); err != nil {
 				fmt.Printf("createExamples error: %v\n", err)
 				return fmt.Errorf("createExamples error: %v", err.Error())
 			}
@@ -513,24 +447,176 @@ func init() {
 	tmplTrainingMLP = template.Must(template.ParseFiles(fileTrainingMLP))
 	tmplTestingMLP = template.Must(template.ParseFiles(fileTestingMLP))
 	tmplVocabularyMLP = template.Must(template.ParseFiles(fileVocabularyMLP))
+	tmplSpectrogram = template.Must(template.ParseFiles(fileSpectrogram))
 }
 
-// createExamples creates a slice of training or testing examples
-func (mlp *MLP) createExamples(wavdir string) error {
-	// read in audio wav files and convert 16-bit samples to []float64
-	files, err := os.ReadDir(wavdir)
-	if err != nil {
-		fmt.Printf("ReadDir for %s error: %v\n", wavdir, err)
-		return fmt.Errorf("ReadDir for %s error %v", wavdir, err.Error())
+// createSpectrograms creates spectrogram csv files from the audio WAV files
+func (mlp *MLP) createSpectrograms() error {
+	// number of directories containing the training audio wav files
+	const ndirs int = 10
+
+	// Power Spectral Density, PSD[N/2] is the Nyquist critical frequency
+	// It is (sampling frequency)/2, the highest non-aliased frequency
+	PSD := make([]float64, mlp.fftSize/2)
+	data := make([]int, 2*maxSamples)
+	// The number of Short-Time Fourier Transforms that will be done
+	maxSTFTs := (maxSamples-mlp.fftSize)/(mlp.fftSize/2) + 1
+
+	for i := 0; i < ndirs; i++ {
+		audiowavDir := filepath.Join(dataDir, fmt.Sprintf("audiowav%d", i))
+		specDir := filepath.Join(dataDir, fmt.Sprintf("spectrogram%d", i))
+
+		// read in audio wav files and convert 16-bit samples to []float64
+		// Each audio WAV file is a separate class
+		files, err := os.ReadDir(audiowavDir)
+		if err != nil {
+			fmt.Printf("ReadDir for %s error: %v\n", audiowavDir, err)
+			return fmt.Errorf("ReadDir for %s error %v", audiowavDir, err.Error())
+		}
+		class := 0
+		for _, dirEntry := range files {
+			name := dirEntry.Name()
+			if filepath.Ext(name) == ".wav" {
+				faudio, err := os.Open(filepath.Join(audiowavDir, name))
+				if err != nil {
+					fmt.Printf("Open %s error: %v\n", name, err)
+					return fmt.Errorf("file Open %s error: %v", name, err.Error())
+				}
+				defer faudio.Close()
+				// only process classes files
+				if class == classes {
+					return fmt.Errorf("can only process %v wav files", classes)
+				}
+
+				dec := wav.NewDecoder(faudio)
+				bufInt := audio.IntBuffer{
+					Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
+					Data:   data, SourceBitDepth: bitDepth}
+				n, err := dec.PCMBuffer(&bufInt)
+				if err != nil {
+					fmt.Printf("PCMBuffer error: %v\n", err)
+					return fmt.Errorf("PCMBuffer error: %v", err.Error())
+				}
+				bufFlt := bufInt.AsFloatBuffer()
+				//fmt.Printf("%s samples = %d\n", name, n)
+				mlp.nsamples = n
+
+				// loop over fltBuf and find the speech bounds
+				bounds, err := mlp.findWords(bufFlt.Data)
+				if err != nil {
+					fmt.Printf("findWords error: %v", err)
+					return fmt.Errorf("findWords error: %s", err.Error())
+				}
+
+				// Remove audio that doesn't contain speech; ie, noise
+				nsamples := bounds[len(bounds)-1].stop - bounds[0].start
+				if nsamples > 2*maxSamples {
+					//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, maxSamples)
+					nsamples = 2 * maxSamples
+				}
+
+				// Save the piece of the audio slice that contains speech.
+				// Move the speech to front of buffer.
+				for i := 0; i < nsamples; i++ {
+					bufFlt.Data[i] = bufFlt.Data[bounds[0].start+i]
+				}
+
+				// normalize the audio to (-1, 1), remove the mean
+				if err := mlp.normalizeAudio(bufFlt.Data[:nsamples], nsamples); err != nil {
+					fmt.Printf("normalizeAudio error: %s\n", err.Error())
+					return fmt.Errorf("normalizeAudio error: %v", err)
+				}
+
+				// Save STFTs to the csv spectrogram file
+				fspec, err := os.Create(filepath.Join(specDir, strings.Replace(name, "wav", "csv", 1)))
+				if err != nil {
+					fmt.Printf("file Create %s error: %v\n", name, err)
+					return fmt.Errorf("file Create %s error: %v", name, err.Error())
+				}
+				defer fspec.Close()
+
+				// Create the spectrogram and save to disk
+				// loop over the word boundaries using 50% overlap
+				nSTFTs := 0
+				for _, bound := range bounds {
+					// loop over the frequency bins
+					for smpl := bound.start; smpl < bound.stop; smpl += mlp.fftSize / 2 {
+						// Skip noise, only speech is useful
+						if mlp.inBoundsSample(smpl, bounds) {
+							_, psdMax, err := mlp.calculatePSD(bufFlt.Data[smpl:smpl+mlp.fftSize], PSD, mlp.fftWindow, mlp.fftSize)
+							if err != nil {
+								fmt.Printf("calculatePSD error: %v\n", err)
+								return fmt.Errorf("calculatePSD error: %v", err.Error())
+							}
+							// Write each STFT PSD to one row in the csv file
+							n := 0
+							for bin := 0; bin < mlp.fftSize/2-1; bin++ {
+								// Relative power in the bin determines the grayscale color
+								r := PSD[bin] / psdMax
+								// five-color grayscale, 0 is white, 4 is black
+								if r < .1 {
+									n = 0
+								} else if r < .25 {
+									n = 1
+								} else if r < .5 {
+									n = 2
+								} else if r < .8 {
+									n = 3
+								} else {
+									n = 4
+								}
+								fmt.Fprintf(fspec, "%d,", n)
+							}
+							// no comma, insert newline
+							r := PSD[mlp.fftSize/2-1] / psdMax
+							// five-color grayscale, 0 is white, 4 is black
+							if r < .1 {
+								n = 0
+							} else if r < .25 {
+								n = 1
+							} else if r < .5 {
+								n = 2
+							} else if r < .8 {
+								n = 3
+							} else {
+								n = 4
+							}
+							fmt.Fprintf(fspec, "%d\n", n)
+							nSTFTs++
+						}
+					}
+				}
+				// remaining STFT PSDs are empty
+				for nSTFTs < maxSTFTs {
+					for bin := 0; bin < mlp.fftSize/2-1; bin++ {
+						fmt.Fprintf(fspec, "0,")
+					}
+					// no comma, insert newline
+					fmt.Fprintf(fspec, "0\n")
+					nSTFTs++
+				}
+				class++
+			}
+		}
 	}
 
-	// Each audio wav file is a separate audio class
+	return nil
+}
+
+// createExamples creates a slice of training examples
+func (mlp *MLP) createExamples(spectrogramDir string) error {
+
+	files, err := os.ReadDir(spectrogramDir)
+	if err != nil {
+		fmt.Printf("ReadDir for %s error: %v\n", spectrogramDir, err)
+		return fmt.Errorf("ReadDir for %s error %v", spectrogramDir, err.Error())
+	}
+	// Each csv spectrogram file is a separate class
 	class := 0
-	data := make([]int, maxSamples)
 	for _, dirEntry := range files {
 		name := dirEntry.Name()
-		if filepath.Ext(name) == ".wav" {
-			f, err := os.Open(path.Join(wavdir, name))
+		if filepath.Ext(name) == ".csv" {
+			f, err := os.Open(path.Join(spectrogramDir, name))
 			if err != nil {
 				fmt.Printf("Open %s error: %v\n", name, err)
 				return fmt.Errorf("file Open %s error: %v", name, err.Error())
@@ -538,51 +624,36 @@ func (mlp *MLP) createExamples(wavdir string) error {
 			defer f.Close()
 			// only process classes files
 			if class == classes {
-				return fmt.Errorf("can only process %v wav files", classes)
+				return fmt.Errorf("can only process %v spectrogram files", classes)
 			}
 
-			dec := wav.NewDecoder(f)
-			bufInt := audio.IntBuffer{
-				Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
-				Data:   data, SourceBitDepth: bitDepth}
-			n, err := dec.PCMBuffer(&bufInt)
-			if err != nil {
-				fmt.Printf("PCMBuffer error: %v\n", err)
-				return fmt.Errorf("PCMBuffer error: %v", err.Error())
-			}
-			bufFlt := bufInt.AsFloatBuffer()
-			//fmt.Printf("%s samples = %d\n", name, n)
-			mlp.nsamples = n
-
-			// loop over fltBuf and find the speech bounds
-			bounds, err := mlp.findWords(bufFlt.Data)
-			if err != nil {
-				fmt.Printf("findWords error: %v", err)
-				return fmt.Errorf("findWords error: %s", err.Error())
+			scanner := bufio.NewScanner(f)
+			// get the STFT grayscale values, each row is a STFT of the PSD for the audio
+			// serialize the 3-D spectrogram into a 1-D slice
+			i := 0
+			for scanner.Scan() {
+				line := scanner.Text()
+				items := strings.Split(line, ",")
+				for _, str := range items {
+					val, err := strconv.Atoi(str)
+					if err != nil {
+						fmt.Printf("String to int conversion error: %v\n", err.Error())
+						return fmt.Errorf("string to int conversion error: %v", err)
+					}
+					mlp.samples[class].grayscale[i] = (float64(val) - 2.0) / 2.0
+					i++
+				}
 			}
 
-			// Remove audio that doesn't contain speech
-			mlp.samples[class].nsamples = bounds[len(bounds)-1].stop - bounds[0].start
-			if mlp.samples[class].nsamples > maxSamples {
-				//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, maxSamples)
-				mlp.samples[class].nsamples = maxSamples
+			if err = scanner.Err(); err != nil {
+				fmt.Printf("scanner error: %s\n", err.Error())
+				return fmt.Errorf("scanner error: %v", err)
 			}
 
 			// save the name of the audio wav without the ext
 			mlp.samples[class].name = strings.Split(name, ".")[0]
 			// The desired output of the MLP is class
 			mlp.samples[class].desired = class
-
-			// save the piece of the audio slice that contains speech
-			for i := 0; i < mlp.samples[class].nsamples; i++ {
-				mlp.samples[class].audio[i] = bufFlt.Data[bounds[0].start+i]
-			}
-
-			// normalize the audio to (-1, 1), remove the mean
-			if err := mlp.normalizeAudio(mlp.samples[class].audio, mlp.samples[class].nsamples); err != nil {
-				fmt.Printf("normalizeAudio error: %s\n", err.Error())
-				return fmt.Errorf("normalizeAudio error: %v", err)
-			}
 
 			class++
 		}
@@ -669,7 +740,7 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 		return nil, fmt.Errorf("epochs int conversion error: %s", err.Error())
 	}
 
-	txt = r.FormValue("window")
+	txt = r.FormValue("wordwindow")
 	if len(txt) == 0 {
 		return nil, fmt.Errorf("select Threshold and Window from the lists")
 	}
@@ -689,11 +760,13 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 		return nil, err
 	}
 
-	txt = r.FormValue("predictororder")
-	predictorOrder, err := strconv.Atoi(txt)
+	fftWindow := r.FormValue("fftwindow")
+
+	txt = r.FormValue("fftsize")
+	fftSize, err := strconv.Atoi(txt)
 	if err != nil {
-		fmt.Printf("predictor order int conversion error: %v\n", err)
-		return nil, fmt.Errorf("predictor order int conversion error: %s", err.Error())
+		fmt.Printf("fftsize int conversion error: %v\n", err)
+		return nil, err
 	}
 
 	mlp := MLP{
@@ -708,21 +781,26 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 			ymax: -math.MaxFloat64,
 			xmin: 0,
 			xmax: float64(epochs - 1)},
-		samples:        make([]Sample, classes),
-		words:          make([]string, 0),
-		wordWindow:     window,
-		dbLevel:        dbLevel,
-		predictorOrder: predictorOrder,
+		samples:    make([]Sample, classes),
+		words:      make([]string, 0),
+		wordWindow: window,
+		dbLevel:    dbLevel,
+		fftSize:    fftSize,
+		fftWindow:  fftWindow,
 	}
+	// input layer nodes:  (#STFT)*fftSize/2+1, includes the bias node
+	ilnodes := ((maxSamples-fftSize)/(fftSize/2)+1)*(fftSize/2) + 1
+
+	// grayscale slice holds maxSamples-fftSize + 1 floats
 	for i := range mlp.samples {
-		mlp.samples[i].audio = make([]float64, maxSamples)
+		mlp.samples[i].grayscale = make([]float64, ilnodes)
 	}
 
 	// construct link that holds the weights and weight deltas
 	mlp.link = make([][]Link, hiddenLayers+1)
 
 	// input layer
-	mlp.link[0] = make([]Link, (predictorOrder+1)*layerDepth)
+	mlp.link[0] = make([]Link, ilnodes*layerDepth)
 
 	// outer layer nodes
 	olnodes := int(math.Ceil(math.Log2(float64(classes))))
@@ -739,7 +817,7 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 	mlp.node = make([][]Node, hiddenLayers+2)
 
 	// input layer
-	mlp.node[0] = make([]Node, mlp.predictorOrder+1)
+	mlp.node[0] = make([]Node, ilnodes)
 	// set first node in the layer (bias) to 1
 	mlp.node[0][0].y = 1.0
 
@@ -929,7 +1007,6 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 		mlp.plot.LearningRate = strconv.FormatFloat(mlp.learningRate, 'f', 4, 64)
 		mlp.plot.Momentum = strconv.FormatFloat(mlp.momentum, 'f', 4, 64)
 		mlp.plot.Epochs = strconv.Itoa(mlp.epochs)
-		mlp.plot.PredictorOrder = strconv.Itoa(mlp.predictorOrder)
 
 		// Save hidden layers, hidden layer depth, classes, epochs, fft size, fft window,
 		// window, threshold, and weights to csv file, one layer per line
@@ -945,9 +1022,9 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer f.Close()
 		// save MLP parameters
-		fmt.Fprintf(f, "%d,%d,%d,%d,%f,%f,%d,%d,%d\n",
+		fmt.Fprintf(f, "%d,%d,%d,%d,%f,%f,%d,%d,%d,%s\n",
 			mlp.epochs, mlp.hiddenLayers, mlp.layerDepth, classes, mlp.learningRate,
-			mlp.momentum, mlp.wordWindow, mlp.dbLevel, mlp.predictorOrder)
+			mlp.momentum, mlp.wordWindow, mlp.dbLevel, mlp.fftSize, mlp.fftWindow)
 		// save weights
 		// save first layer, one weight per line because too long to scan in
 		for _, node := range mlp.link[0] {
@@ -975,6 +1052,63 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 		}
 
 	}
+}
+
+// Welch's Method and Bartlett's Method variation of the Periodogram
+func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, fftWindow string, fftSize int) (float64, float64, error) {
+
+	N := fftSize
+	m := N / 2
+
+	// map of window functions
+	window := make(map[string]Window, len(winType))
+	// Put the window functions in the map
+	window["Bartlett"] = bartlett
+	window["Welch"] = welch
+	window["Hamming"] = hamming
+	window["Hanning"] = hanning
+	window["Rectangle"] = rectangle
+
+	w, ok := window[fftWindow]
+	if !ok {
+		fmt.Printf("Invalid FFT window type: %v\n", fftWindow)
+		return 0, 0, fmt.Errorf("invalid FFT window type: %v", fftWindow)
+	}
+
+	bufN := make([]complex128, N)
+
+	for j := 0; j < len(audio); j++ {
+		bufN[j] = complex(audio[j], 0)
+	}
+
+	// zero-pad the remaining samples
+	for i := len(audio); i < N; i++ {
+		bufN[i] = 0
+	}
+
+	// window the N samples with chosen window
+	for k := 0; k < N; k++ {
+		bufN[k] *= w(k, m)
+	}
+
+	// Perform N-point complex FFT and add squares to previous values in PSD
+	fourierN := fft.FFT(bufN)
+	x := cmplx.Abs(fourierN[0])
+	PSD[0] = x * x
+	psdMax := PSD[0]
+	psdAvg := PSD[0]
+	for j := 1; j < m; j++ {
+		// Use positive and negative frequencies -> bufN[N-j] = bufN[-j]
+		xj := cmplx.Abs(fourierN[j])
+		xNj := cmplx.Abs(fourierN[N-j])
+		PSD[j] = xj*xj + xNj*xNj
+		if PSD[j] > psdMax {
+			psdMax = PSD[j]
+		}
+		psdAvg += PSD[j]
+	}
+
+	return psdAvg / float64(m), psdMax, nil
 }
 
 // findWords finds the word boundaries in the testing message
@@ -1097,7 +1231,7 @@ func (mlp *MLP) runClassification() error {
 	dec := wav.NewDecoder(f)
 	bufInt := audio.IntBuffer{
 		Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
-		Data:   make([]int, maxSamples), SourceBitDepth: bitDepth}
+		Data:   make([]int, 2*maxSamples), SourceBitDepth: bitDepth}
 	n, err := dec.PCMBuffer(&bufInt)
 	if err != nil {
 		fmt.Printf("PCMBuffer error: %v\n", err)
@@ -1121,9 +1255,9 @@ func (mlp *MLP) runClassification() error {
 	stop := bounds[len(bounds)-1].stop
 	fmt.Printf("start = %.3f, stop = %.3f\n", float64(start)*.000125, float64(stop)*.000125)
 	mlp.nsamples = stop - start
-	if mlp.nsamples > maxSamples {
-		//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, maxSamples)
-		mlp.nsamples = maxSamples
+	if mlp.nsamples > 2*maxSamples {
+		//fmt.Printf("%d audio samples is greater than max of %d\n", mlp.nsamples, 2*maxSamples)
+		mlp.nsamples = 2 * maxSamples
 	}
 
 	// copy the speech part of the audio
@@ -1137,7 +1271,61 @@ func (mlp *MLP) runClassification() error {
 		return fmt.Errorf("normalizeAudio error: %v", err)
 	}
 
-	samp := Sample{desired: 0, audio: bufFlt.Data, name: "", nsamples: mlp.nsamples}
+	// Power Spectral Density, PSD[N/2] is the Nyquist critical frequency
+	// It is (sampling frequency)/2, the highest non-aliased frequency
+	PSD := make([]float64, mlp.fftSize/2)
+
+	// The number of Short-Time Fourier Transforms that will be done
+	maxSTFTs := (maxSamples-mlp.fftSize)/(mlp.fftSize/2) + 1
+
+	// serialize the 3-D spectrogram to 1-D slice for input layer of MLP
+	grayscale := make([]float64, maxSTFTs*(mlp.fftSize/2))
+
+	// Create the spectrogram
+	// loop over the word boundaries using 50% overlap
+	i := 0
+	nSTFTs := 0
+	for _, bound := range bounds {
+		// loop over the frequency bins
+		for smpl := bound.start; smpl < bound.stop; smpl += mlp.fftSize / 2 {
+			// Skip noise, only speech is useful
+			if mlp.inBoundsSample(smpl, bounds) {
+				_, psdMax, err := mlp.calculatePSD(bufFlt.Data[smpl:smpl+mlp.fftSize], PSD, mlp.fftWindow, mlp.fftSize)
+				if err != nil {
+					fmt.Printf("calculatePSD error: %v\n", err)
+					return fmt.Errorf("calculatePSD error: %v", err.Error())
+				}
+				// Write the spectrogram
+				for bin := 0; bin < mlp.fftSize/2; bin++ {
+					r := PSD[bin] / psdMax
+					val := 0.0
+					// five-color grayscale: -1.0, -.5, 0, .5, 1.0
+					if r < .1 {
+						val = -1.0
+					} else if r < .25 {
+						val = -0.5
+					} else if r < .5 {
+						val = 0
+					} else if r < .8 {
+						val = 0.5
+					} else {
+						val = 1.0
+					}
+					grayscale[i] = val
+					i++
+				}
+				nSTFTs++
+			}
+		}
+	}
+	// remaining STFTs are empty
+	for nSTFTs < maxSTFTs {
+		for bin := 0; bin < mlp.fftSize/2; bin++ {
+			grayscale[i] = -1.0
+		}
+	}
+
+	samp := Sample{desired: 0, grayscale: grayscale, name: ""}
 	err = mlp.propagateForward(&samp)
 	if err != nil {
 		return fmt.Errorf("forward propagation error: %s", err.Error())
@@ -1157,11 +1345,10 @@ func (mlp *MLP) runClassification() error {
 	mlp.plot.Epochs = strconv.Itoa(mlp.epochs)
 	mlp.plot.WordWindow = strconv.Itoa(mlp.wordWindow)
 	mlp.plot.Threshold = strconv.Itoa(mlp.dbLevel)
-	mlp.plot.PredictorOrder = strconv.Itoa(mlp.predictorOrder)
-	if mlp.domain == "predictor" {
-		mlp.plot.Domain = "Predictor Domain (sec)"
-	} else if mlp.domain == "frequency" {
-		mlp.plot.Domain = "Frequency Domain (dB/Hz)"
+	mlp.plot.FFTSize = strconv.Itoa(mlp.fftSize)
+	mlp.plot.FFTWindow = mlp.fftWindow
+	if mlp.domain == "spectrogram" {
+		mlp.plot.Domain = "Spectrogram (Hz/sec)"
 	} else {
 		mlp.plot.Domain = "Time Domain (sec)"
 	}
@@ -1187,8 +1374,8 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 	line := scanner.Text()
 
 	items := strings.Split(line, ",")
-	if len(items) != 9 {
-		fmt.Printf("Testing parameters missing, should be 9, is %d\n", len(items))
+	if len(items) != 10 {
+		fmt.Printf("Testing parameters missing, should be 10, is %d\n", len(items))
 		return nil, fmt.Errorf("testing parameters missing, run Train first")
 	}
 
@@ -1226,9 +1413,9 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 		return nil, err
 	}
 
-	window, err := strconv.Atoi(items[6])
+	wordWindow, err := strconv.Atoi(items[6])
 	if err != nil {
-		fmt.Printf("Conversion to int of 'window' error: %v\n", err)
+		fmt.Printf("Conversion to int of 'wordWindow' error: %v\n", err)
 		return nil, err
 	}
 
@@ -1238,31 +1425,36 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 		return nil, err
 	}
 
-	predictorOrder, err := strconv.Atoi(items[8])
+	fftSize, err := strconv.Atoi(items[8])
 	if err != nil {
-		fmt.Printf("Conversion to int of 'predictorOrder' error: %v\n", err)
+		fmt.Printf("Conversion to int of 'fftSize' error: %v\n", err)
 		return nil, err
 	}
 
+	fftWindow := items[9]
+
 	// construct the mlp
 	mlp := MLP{
-		epochs:         epochs,
-		hiddenLayers:   hiddenLayers,
-		layerDepth:     hidLayersDepth,
-		plot:           plot,
-		learningRate:   learningRate,
-		samples:        make([]Sample, 0),
-		momentum:       momentum,
-		words:          make([]string, 0),
-		wordWindow:     window,
-		dbLevel:        dbLevel,
-		predictorOrder: predictorOrder,
+		epochs:       epochs,
+		hiddenLayers: hiddenLayers,
+		layerDepth:   hidLayersDepth,
+		plot:         plot,
+		learningRate: learningRate,
+		samples:      make([]Sample, 0),
+		momentum:     momentum,
+		words:        make([]string, 0),
+		wordWindow:   wordWindow,
+		dbLevel:      dbLevel,
+		fftSize:      fftSize,
+		fftWindow:    fftWindow,
 	}
 
 	// retrieve the weights
 	// first layer, one weight per line, (transformSize+1)*hiddenLayers
 	mlp.link = make([][]Link, hiddenLayers+1)
-	nwgts := (mlp.predictorOrder + 1) * hidLayersDepth
+
+	ilnodes := ((maxSamples-fftSize)/(fftSize/2)+1)*(fftSize/2) + 1
+	nwgts := ilnodes * hidLayersDepth
 	mlp.link[0] = make([]Link, nwgts)
 	for i := 0; i < nwgts; i++ {
 		scanner.Scan()
@@ -1300,7 +1492,7 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 	mlp.node = make([][]Node, mlp.hiddenLayers+2)
 
 	// input layer
-	mlp.node[0] = make([]Node, mlp.predictorOrder+1)
+	mlp.node[0] = make([]Node, ilnodes)
 	// set first node in the layer (bias) to 1
 	mlp.node[0][0].y = 1.0
 
@@ -1325,10 +1517,19 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 
 // handleTestingMLP performs pattern classification of the test data
 func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
+	// open and read the audio wav file
+	// create wav decoder, audio IntBuffer, convert to audio FloatBuffer
+	// loop over the Float Buffer data and generate the spectrogram
+	// fill the grid with the values
+	// Option to plot time domain added.
+	// Option to plot spectrogram output added.
+
 	var (
-		plot PlotT
-		mlp  *MLP
-		err  error
+		plot       PlotT
+		mlp        *MLP
+		err        error
+		wordWindow int  = 0
+		wordsOnly  bool = false
 	)
 
 	// Fill in the vocabulary
@@ -1391,7 +1592,7 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine if predictor, time or frequency domain plot
+	// Determine if time or spectrogram domain plot
 	mlp.domain = r.FormValue("domain")
 	if len(mlp.domain) == 0 {
 		mlp.domain = "time"
@@ -1410,51 +1611,37 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// open and read the audio wav file
-	// create wav decoder, audio IntBuffer, convert to audio FloatBuffer
-	// loop over the Float Buffer data and generate the Spectral Power Density
-	// fill the grid with the PSD values
-	// Option to plot time domain added.
-	// Option to plot predictor output added.
+	mlp = &MLP{plot: &plot, wordWindow: wordWindow, fftSize: mlp.fftSize}
+	mlp.grayscale = make(map[int]string)
+	for i := 0; i < ncolors; i++ {
+		mlp.grayscale[i] = fmt.Sprintf("gs%d", i)
+	}
 
-	if mlp.domain == "predictor" {
-		err = mlp.processPredictorDomain()
+	if mlp.domain == "spectrogram" {
+		if len(r.FormValue("wordsonly")) > 0 {
+			wordsOnly = true
+			txt := r.FormValue("wordwindow")
+			if len(txt) == 0 {
+				fmt.Println("Word window not defined for spectrogram  domain")
+				plot.Status = "Word window not defined for spectrogram  domain"
+				// Write to HTTP using template and grid
+				if err := tmplTestingMLP.Execute(w, plot); err != nil {
+					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+				}
+				return
+			}
+		}
+		err = mlp.processSpectrogram(msgTestWav, mlp.fftWindow, wordsOnly, mlp.fftSize)
 		if err != nil {
-			fmt.Printf("proessPredictorDomain error: %v\n", err)
-			plot.Status = fmt.Sprintf("processPredictorDomain error: %v", err.Error())
+			fmt.Printf("proessSpectrogram error: %v\n", err)
+			plot.Status = fmt.Sprintf("processSpectrogram error: %v", err.Error())
 			// Write to HTTP using template and grid
 			if err := tmplTestingMLP.Execute(w, plot); err != nil {
 				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
 			}
 			return
 		}
-		plot.Status = "Predictor Domain: FIR predictor plotted."
-	} else if mlp.domain == "frequency" {
-		fftWindow := r.FormValue("fftwindow")
-		txt := r.FormValue("fftsize")
-		fftSize, err := strconv.Atoi(txt)
-		if err != nil {
-			fmt.Printf("fftsize int conversion error: %v\n", err)
-			plot.Status = fmt.Sprintf("fftsize int conversion error: %s", err.Error())
-			// Write to HTTP using template and grid
-			if err := tmplTestingMLP.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-			}
-			return
-		}
-
-		err = mlp.processFrequencyDomain(msgTestWav, fftWindow, fftSize)
-		if err != nil {
-			fmt.Printf("processFrequencyDomain error: %v\n", err)
-			plot.Status = fmt.Sprintf("processFrequencyDomain error: %v", err.Error())
-			// Write to HTTP using template and grid
-			if err := tmplTestingMLP.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-			}
-			return
-		}
-		plot.Status = fmt.Sprintf("Frequency Domain: PSD of %s plotted.", filepath.Join(dataDir, msgTestWav))
-		// Domain = Time
+		plot.Status = "Spectrogram plotted."
 	} else {
 		err := mlp.processTimeDomain(msgTestWav)
 		if err != nil {
@@ -1476,14 +1663,10 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		fmt.Printf("fmedia is available in path: %s\n", fmedia)
 		file := msgTestWav
-		if mlp.domain == "predictor" {
-			file = predictorWav
-		}
 		cmd := exec.Command(fmedia, filepath.Join(dataDir, file))
 		stdoutStderr, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
-
 		} else {
 			fmt.Printf("fmedia output: %s\n", string(stdoutStderr))
 		}
@@ -1510,110 +1693,6 @@ func (ep *Endpoints) findEndpoints(input []float64) {
 	}
 }
 
-// processPredictorDomain plots the FIR predictor response
-func (mlp *MLP) processPredictorDomain() error {
-	var (
-		xscale    float64
-		yscale    float64
-		endpoints Endpoints
-	)
-
-	mlp.plot.Grid = make([]string, rows*cols)
-	mlp.plot.Xlabel = make([]string, xlabels)
-	mlp.plot.Ylabel = make([]string, ylabels)
-
-	mlp.nsamples = len(mlp.predictor)
-
-	endpoints.findEndpoints(mlp.predictor)
-	// time starts at 0 and ends at #samples*sampling period
-	endpoints.xmin = 0.0
-	// #samples*sampling period, sampling period = 1/sampleRate
-	endpoints.xmax = float64(mlp.nsamples) / float64(sampleRate)
-
-	// EP means endpoints
-	lenEPx := endpoints.xmax - endpoints.xmin
-	lenEPy := endpoints.ymax - endpoints.ymin
-	prevTime := 0.0
-	prevAmpl := mlp.predictor[0]
-
-	// Calculate scale factors for x and y
-	xscale = float64(cols-1) / (endpoints.xmax - endpoints.xmin)
-	yscale = float64(rows-1) / (endpoints.ymax - endpoints.ymin)
-
-	// This previous cell location (row,col) is on the line (visible)
-	row := int((endpoints.ymax-mlp.predictor[0])*yscale + .5)
-	col := int((0.0-endpoints.xmin)*xscale + .5)
-	mlp.plot.Grid[row*cols+col] = "online"
-
-	// Store the amplitude in the plot Grid
-	for n := 1; n < mlp.nsamples; n++ {
-		// Current time
-		currTime := float64(n) / float64(sampleRate)
-
-		// This current cell location (row,col) is on the line (visible)
-		row := int((endpoints.ymax-mlp.predictor[n])*yscale + .5)
-		col := int((currTime-endpoints.xmin)*xscale + .5)
-		mlp.plot.Grid[row*cols+col] = "online"
-
-		// Interpolate the points between previous point and current point;
-		// draw a straight line between points.
-		lenEdgeTime := math.Abs((currTime - prevTime))
-		lenEdgeAmpl := math.Abs(mlp.predictor[n] - prevAmpl)
-		ncellsTime := int(float64(cols) * lenEdgeTime / lenEPx) // number of points to interpolate in x-dim
-		ncellsAmpl := int(float64(rows) * lenEdgeAmpl / lenEPy) // number of points to interpolate in y-dim
-		// Choose the biggest
-		ncells := ncellsTime
-		if ncellsAmpl > ncells {
-			ncells = ncellsAmpl
-		}
-
-		stepTime := float64(currTime-prevTime) / float64(ncells)
-		stepAmpl := float64(mlp.predictor[n]-prevAmpl) / float64(ncells)
-
-		// loop to draw the points
-		interpTime := prevTime
-		interpAmpl := prevAmpl
-		for i := 0; i < ncells; i++ {
-			row := int((endpoints.ymax-interpAmpl)*yscale + .5)
-			col := int((interpTime-endpoints.xmin)*xscale + .5)
-			// This cell location (row,col) is on the line (visible)
-			mlp.plot.Grid[row*cols+col] = "online"
-			interpTime += stepTime
-			interpAmpl += stepAmpl
-		}
-
-		// Update the previous point with the current point
-		prevTime = currTime
-		prevAmpl = mlp.predictor[n]
-
-	}
-
-	// Set plot status if no errors
-	if len(mlp.plot.Status) == 0 {
-		mlp.plot.Status = fmt.Sprintf("%s plotted from (%.3f,%.3f) to (%.3f,%.3f)",
-			"predictor", endpoints.xmin, endpoints.ymin, endpoints.xmax, endpoints.ymax)
-	}
-
-	// Construct x-axis labels
-	incr := (endpoints.xmax - endpoints.xmin) / (xlabels - 1)
-	x := endpoints.xmin
-	// First label is empty for alignment purposes
-	for i := range mlp.plot.Xlabel {
-		mlp.plot.Xlabel[i] = fmt.Sprintf("%.2f", x)
-		x += incr
-	}
-
-	// Construct the y-axis labels
-	incr = (endpoints.ymax - endpoints.ymin) / (ylabels - 1)
-	y := endpoints.ymin
-	for i := range mlp.plot.Ylabel {
-		mlp.plot.Ylabel[i] = fmt.Sprintf("%.2f", y)
-		y += incr
-	}
-
-	return nil
-}
-
 // processTimeDomain plots the time domain data from audio wav file
 func (mlp *MLP) processTimeDomain(filename string) error {
 
@@ -1634,7 +1713,7 @@ func (mlp *MLP) processTimeDomain(filename string) error {
 		dec := wav.NewDecoder(f)
 		bufInt := audio.IntBuffer{
 			Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
-			Data:   make([]int, maxSamples), SourceBitDepth: bitDepth}
+			Data:   make([]int, 2*maxSamples), SourceBitDepth: bitDepth}
 		n, err := dec.PCMBuffer(&bufInt)
 		if err != nil {
 			fmt.Printf("PCMBuffer error: %v\n", err)
@@ -1740,358 +1819,13 @@ func (mlp *MLP) processTimeDomain(filename string) error {
 	return nil
 }
 
-// Welch's Method and Bartlett's Method variation of the Periodogram
-func (mlp *MLP) calculatePSD(audio []float64, PSD []float64, fftWindow string, fftSize int) (float64, float64, error) {
-
-	N := fftSize
-	m := N / 2
-
-	// map of window functions
-	window := make(map[string]Window, len(winType))
-	// Put the window functions in the map
-	window["Bartlett"] = bartlett
-	window["Welch"] = welch
-	window["Hamming"] = hamming
-	window["Hanning"] = hanning
-	window["Rectangle"] = rectangle
-
-	w, ok := window[fftWindow]
-	if !ok {
-		fmt.Printf("Invalid FFT window type: %v\n", fftWindow)
-		return 0, 0, fmt.Errorf("invalid FFT window type: %v", fftWindow)
-	}
-	sumWindow := 0.0
-	// sum the window values for PSD normalization due to windowing
-	for i := 0; i < N; i++ {
-		x := cmplx.Abs(w(i, N))
-		sumWindow += x * x
-	}
-
-	psdMax := -math.MaxFloat64 // maximum PSD value
-	psdMin := math.MaxFloat64  // minimum PSD value
-
-	bufm := make([]complex128, m)
-	bufN := make([]complex128, N)
-
-	// part of K*Sum(w[i]*w[i]) PSD normalizer
-	normalizerPSD := sumWindow
-
-	// Initialize the PSD to zero as it is reused when creating examples
-	for i := range PSD {
-		PSD[i] = 0.0
-	}
-
-	var sections int
-
-	// Bartlett's method has no overlap of input data and uses the rectangle window
-	if fftWindow == "Rectangle" {
-		// full sections, account for partial section later
-		sections = mlp.nsamples / N
-		start := 0
-		// Loop over sections and accumulate the PSD
-		for i := 0; i < sections; i++ {
-
-			for j := 0; j < N; j++ {
-				bufN[j] = complex(audio[start+j], 0)
-			}
-
-			// Rectangle window, unity gain implicitly done
-
-			// Perform N-point complex FFT and add squares to previous values in PSD
-			// Normalize the PSD with the window sum, then convert to dB with 10*log10()
-			fourierN := fft.FFT(bufN)
-			x := cmplx.Abs(fourierN[0])
-			PSD[0] += x * x
-			for j := 1; j < m; j++ {
-				// Use positive and negative frequencies -> bufN[N-j] = bufN[-j]
-				xj := cmplx.Abs(fourierN[j])
-				xNj := cmplx.Abs(fourierN[N-j])
-				PSD[j] += xj*xj + xNj*xNj
-			}
-
-			// part of K*Sum(w[i]*w[i]) PSD normalizer
-			normalizerPSD += sumWindow
-			// No overlap, skip to next N samples
-			start += N
-		}
-
-		// left over samples if nsamples is not a multiple of FFT size
-		diff := mlp.nsamples - start
-		//fmt.Printf("left over samples = %d\n", diff)
-		if diff > 0 {
-			for j := 0; j < diff; j++ {
-				bufN[j] = complex(audio[start+j], 0)
-			}
-
-			// zero-pad the remaining samples
-			for i := diff; i < N; i++ {
-				bufN[i] = 0
-			}
-
-			// Rectangle window, unity gain
-
-			// Perform N-point complex FFT and add squares to previous values in PSD
-			// Normalize the PSD with the window sum, then convert to dB with 10*log10()
-			fourierN := fft.FFT(bufN)
-			x := cmplx.Abs(fourierN[0])
-			PSD[0] += x * x
-			for j := 1; j < m; j++ {
-				// Use positive and negative frequencies -> bufN[N-j] = bufN[-j]
-				xj := cmplx.Abs(fourierN[j])
-				xNj := cmplx.Abs(fourierN[N-j])
-				PSD[j] += xj*xj + xNj*xNj
-			}
-
-			// part of K*Sum(w[i]*w[i]) PSD normalizer
-			normalizerPSD += sumWindow
-		}
-
-		// 50% overlap sections of audio input for non-rectangle windows, Welch's method
-	} else {
-		start := int(math.Min(float64(m), float64(mlp.nsamples)))
-		// use two buffers, copy previous section to the front of current section
-		for j := 0; j < start; j++ {
-			bufm[j] = complex(audio[j], 0)
-		}
-		sections = (mlp.nsamples - m) / m
-		for i := 0; i < sections; i++ {
-			// copy previous section to front of current section
-			copy(bufN, bufm)
-			// Get the next fftSize/2 audio samples
-			for j := 0; j < m; j++ {
-				bufm[j] = complex(audio[start+j], 0)
-			}
-			// Put current section in back of previous
-			copy(bufN[m:], bufm)
-
-			// window the N samples with chosen window
-			for k := 0; k < N; k++ {
-				bufN[k] *= w(k, m)
-			}
-
-			// Perform N-point complex FFT and add squares to previous values in PSD
-			// Normalize the PSD with the window sum, then convert to dB with 10*log10()
-			fourierN := fft.FFT(bufN)
-			x := cmplx.Abs(fourierN[0])
-			PSD[0] += x * x
-			for j := 1; j < m; j++ {
-				// Use positive and negative frequencies -> bufN[N-j] = bufN[-j]
-				xj := cmplx.Abs(fourierN[j])
-				xNj := cmplx.Abs(fourierN[N-j])
-				PSD[j] += xj*xj + xNj*xNj
-			}
-
-			// part of K*Sum(w[i]*w[i]) PSD normalizer
-			normalizerPSD += sumWindow
-
-			start += m
-		}
-
-		// left over samples if nsamples is not a multiple of FFT size / 2
-		diff := mlp.nsamples - start
-		//fmt.Printf("left over samples = %d\n", diff)
-		if diff > 0 {
-
-			// copy previous section to front of current section
-			copy(bufN, bufm)
-
-			// Put the remaining samples in back of the previous m
-			for j := 0; j < diff; j++ {
-				bufN[m+j] = complex(audio[start+j], 0)
-			}
-
-			// zero-pad the remaining samples
-			for i := m + diff; i < N; i++ {
-				bufN[i] = 0
-			}
-
-			// window the N samples with chosen window
-			for k := 0; k < m+diff; k++ {
-				bufN[k] *= w(k, m)
-			}
-
-			// Perform N-point complex FFT and add squares to previous values in PSD
-			// Normalize the PSD with the window sum, then convert to dB with 10*log10()
-			fourierN := fft.FFT(bufN)
-			x := cmplx.Abs(fourierN[0])
-			PSD[0] += x * x
-			for j := 1; j < m; j++ {
-				// Use positive and negative frequencies -> bufN[N-j] = bufN[-j]
-				xj := cmplx.Abs(fourierN[j])
-				xNj := cmplx.Abs(fourierN[N-j])
-				PSD[j] += xj*xj + xNj*xNj
-			}
-
-			// part of K*Sum(w[i]*w[i]) PSD normalizer
-			normalizerPSD += sumWindow
-		}
-
-	}
-
-	for i := range PSD {
-		PSD[i] /= normalizerPSD
-		PSD[i] = 10.0 * math.Log10(PSD[i])
-		if PSD[i] > psdMax {
-			psdMax = PSD[i]
-		}
-		if PSD[i] < psdMin {
-			psdMin = PSD[i]
-		}
-	}
-
-	return psdMin, psdMax, nil
-}
-
-// processFrequencyDomain calculates the Power Spectral Density (PSD) and plots it
-func (mlp *MLP) processFrequencyDomain(filename, fftWindow string, fftSize int) error {
-	// Use complex128 for FFT computation
-	// open and read the audio wav file
-	// create wav decoder, audio IntBuffer, convert IntBuffer to audio FloatBuffer
-	// loop over the FloatBuffer.Data and generate the FFT
-	// fill the grid with the 10log10( mag^2 ) dB, Power Spectral Density
-
-	var (
-		endpoints Endpoints
-		PSD       []float64 // power spectral density
-		xscale    float64   // data to grid in x direction
-		yscale    float64   // data to grid in y direction
-	)
-
-	mlp.plot.Grid = make([]string, rows*cols)
-	mlp.plot.Xlabel = make([]string, xlabels)
-	mlp.plot.Ylabel = make([]string, ylabels)
-
-	// Power Spectral Density, PSD[N/2] is the Nyquist critical frequency
-	// It is (sampling frequency)/2, the highest non-aliased frequency
-	PSD = make([]float64, fftSize/2)
-
-	// Open the audio wav file
-	f, err := os.Open(filepath.Join(dataDir, filename))
-	if err == nil {
-		defer f.Close()
-		dec := wav.NewDecoder(f)
-		bufInt := audio.IntBuffer{
-			Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
-			Data:   make([]int, maxSamples), SourceBitDepth: bitDepth}
-		n, err := dec.PCMBuffer(&bufInt)
-		if err != nil {
-			fmt.Printf("PCMBuffer error: %v\n", err)
-			return fmt.Errorf("PCMBuffer error: %v", err.Error())
-		}
-		bufFlt := bufInt.AsFloatBuffer()
-		//fmt.Printf("%s samples = %d\n", filename, n)
-		mlp.nsamples = n
-
-		// calculate the PSD using Bartlett's or Welch's variant of the Periodogram
-		psdMin, psdMax, err := mlp.calculatePSD(bufFlt.Data, PSD, fftWindow, fftSize)
-		if err != nil {
-			fmt.Printf("calculatePSD error: %v\n", err)
-			return fmt.Errorf("calculatePSD error: %v", err.Error())
-		}
-
-		endpoints.xmin = 0.0
-		endpoints.xmax = float64(fftSize / 2) // equivalent to Nyquist critical frequency
-		endpoints.ymin = psdMin
-		endpoints.ymax = psdMax
-
-		// EP means endpoints
-		lenEPx := endpoints.xmax - endpoints.xmin
-		lenEPy := endpoints.ymax - endpoints.ymin
-		prevBin := 0.0
-		prevPSD := PSD[0]
-
-		// Calculate scale factors for x and y
-		xscale = float64(cols-1) / (endpoints.xmax - endpoints.xmin)
-		yscale = float64(rows-1) / (endpoints.ymax - endpoints.ymin)
-
-		// This previous cell location (row,col) is on the line (visible)
-		bin := 0
-		row := int((endpoints.ymax-PSD[bin])*yscale + .5)
-		col := int((float64(bin)-endpoints.xmin)*xscale + .5)
-		mlp.plot.Grid[row*cols+col] = "online"
-
-		// Store the PSD in the plot Grid
-		for bin = 1; bin < fftSize/2; bin++ {
-
-			// This current cell location (row,col) is on the line (visible)
-			row := int((endpoints.ymax-PSD[bin])*yscale + .5)
-			col := int((float64(bin)-endpoints.xmin)*xscale + .5)
-			mlp.plot.Grid[row*cols+col] = "online"
-
-			// Interpolate the points between previous point and current point;
-			// draw a straight line between points.
-			lenEdgeBin := math.Abs((float64(bin) - prevBin))
-			lenEdgePSD := math.Abs(PSD[bin] - prevPSD)
-			ncellsBin := int(float64(cols) * lenEdgeBin / lenEPx) // number of points to interpolate in x-dim
-			ncellsPSD := int(float64(rows) * lenEdgePSD / lenEPy) // number of points to interpolate in y-dim
-			// Choose the biggest
-			ncells := ncellsBin
-			if ncellsPSD > ncells {
-				ncells = ncellsPSD
-			}
-
-			stepBin := float64(float64(bin)-prevBin) / float64(ncells)
-			stepPSD := float64(PSD[bin]-prevPSD) / float64(ncells)
-
-			// loop to draw the points
-			interpBin := prevBin
-			interpPSD := prevPSD
-			for i := 0; i < ncells; i++ {
-				row := int((endpoints.ymax-interpPSD)*yscale + .5)
-				col := int((interpBin-endpoints.xmin)*xscale + .5)
-				// This cell location (row,col) is on the line (visible)
-				mlp.plot.Grid[row*cols+col] = "online"
-				interpBin += stepBin
-				interpPSD += stepPSD
-			}
-
-			// Update the previous point with the current point
-			prevBin = float64(bin)
-			prevPSD = PSD[bin]
-
-		}
-
-		// Set plot status if no errors
-		if len(mlp.plot.Status) == 0 {
-			mlp.plot.Status = fmt.Sprintf("file %s plotted from (%.3f,%.3f) to (%.3f,%.3f)",
-				filename, endpoints.xmin, endpoints.ymin, endpoints.xmax, endpoints.ymax)
-		}
-
-	} else {
-		// Set plot status
-		fmt.Printf("Error opening file %s: %v\n", filename, err)
-		return fmt.Errorf("error opening file %s: %v", filename, err)
-	}
-
-	// Apply the  sampling rate in Hz to the x-axis using a scale factor
-	// Convert the fft size to sampleRate/2, the Nyquist critical frequency
-	sf := 0.5 * sampleRate / endpoints.xmax
-
-	// Construct x-axis labels
-	incr := (endpoints.xmax - endpoints.xmin) / (xlabels - 1)
-	x := endpoints.xmin
-	// First label is empty for alignment purposes
-	for i := range mlp.plot.Xlabel {
-		mlp.plot.Xlabel[i] = fmt.Sprintf("%.0f", x*sf)
-		x += incr
-	}
-
-	// Construct the y-axis labels
-	incr = (endpoints.ymax - endpoints.ymin) / (ylabels - 1)
-	y := endpoints.ymin
-	for i := range mlp.plot.Ylabel {
-		mlp.plot.Ylabel[i] = fmt.Sprintf("%.2f", y)
-		y += incr
-	}
-
-	return nil
-}
-
 // Create a vocabulary for the message and display their values
 func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 	var (
-		plot PlotT
-		mlp  *MLP
+		plot       PlotT
+		mlp        *MLP
+		wordWindow int  = 0
+		wordsOnly  bool = false
 	)
 
 	// Determine operation to perform on the vocabulary:  play, add, delete a word
@@ -2120,8 +1854,8 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 
 		// Determine if time or frequency domain plot
 		domain := r.FormValue("domain")
-		if domain == "frequency" {
-			plot.Domain = "Frequency Domain (dB/Hz)"
+		if domain == "spectrogram" {
+			plot.Domain = "Spectrogram (Hz/sec)"
 		} else {
 			plot.Domain = "Time Domain (sec)"
 		}
@@ -2139,7 +1873,7 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			plot.Status += fmt.Sprintf("Time Domain of %s plotted.", filepath.Join(dataDir, audiowavdir, filename))
-			// Frequency Domain
+			// Spectrogram
 		} else {
 			fftWindow := r.FormValue("fftwindow")
 
@@ -2154,19 +1888,47 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			mlp = &MLP{plot: &plot}
+			if len(r.FormValue("wordsonly")) > 0 {
+				wordsOnly = true
+				txt := r.FormValue("wordwindow")
+				if len(txt) == 0 {
+					fmt.Println("Word window not defined for spectrogram  domain")
+					plot.Status = "Word window not defined for spectrogram  domain"
+					// Write to HTTP using template and grid
+					if err := tmplVocabularyMLP.Execute(w, plot); err != nil {
+						log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+					}
+					return
+				}
+				wordWindow, err = strconv.Atoi(txt)
+				if err != nil {
+					fmt.Printf("Conversion to int for 'wordwindow' error: %v\n", err)
+					plot.Status = "Conversion to int for 'window' error"
+					// Write to HTTP using template and grid
+					if err := tmplVocabularyMLP.Execute(w, plot); err != nil {
+						log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+					}
+					return
+				}
+			}
 
-			err = mlp.processFrequencyDomain(filepath.Join(audiowavdir, filename), fftWindow, fftSize)
+			mlp = &MLP{plot: &plot, wordWindow: wordWindow, fftSize: fftSize}
+			mlp.grayscale = make(map[int]string)
+			for i := 0; i < ncolors; i++ {
+				mlp.grayscale[i] = fmt.Sprintf("gs%d", i)
+			}
+
+			err = mlp.processSpectrogram(filepath.Join(audiowavdir, filename), fftWindow, wordsOnly, fftSize)
 			if err != nil {
-				fmt.Printf("processFrequencyDomain error: %v\n", err)
-				plot.Status = fmt.Sprintf("processFrequencyDomain error: %v", err.Error())
+				fmt.Printf("processSpectrogram error: %v\n", err)
+				plot.Status = fmt.Sprintf("processSpectrogram error: %v", err.Error())
 				// Write to HTTP using template and grid
 				if err := tmplVocabularyMLP.Execute(w, plot); err != nil {
 					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
 				}
 				return
 			}
-			plot.Status += fmt.Sprintf("Frequency Domain: PSD of %s plotted.", filepath.Join(dataDir, filename))
+			plot.Status += fmt.Sprintf("Spectrogram of %s plotted.", filepath.Join(dataDir, audiowavdir, filename))
 		}
 
 		// Play the audio wav if fmedia is available in the PATH environment variable
@@ -2267,6 +2029,384 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 
 }
 
+// inBoundsSample checks if the sample is inside word boundaries
+func (mlp *MLP) inBoundsSample(smpl int, bounds []Bound) bool {
+	margin := mlp.fftSize / 2
+	for _, bound := range bounds {
+		if smpl > (bound.start-margin) && smpl < (bound.stop-margin) {
+			return true
+		}
+	}
+	return false
+}
+
+// processSpectrogram creates a spectrogram of the speech waveform
+func (mlp *MLP) processSpectrogram(filename, fftWindow string, wordsOnly bool, fftSize int) error {
+
+	// get audio samples from audio wav file
+	// open and read the audio wav file
+	// create wav decoder, audio IntBuffer, convert IntBuffer to audio FloatBuffer
+	var (
+		endpoints Endpoints
+		PSD       []float64 // power spectral density
+		xscale    float64   // data to grid in x direction
+		yscale    float64   // data to grid in y direction
+		bounds    []Bound   // word boundaries in the audio
+	)
+
+	mlp.plot.Grid = make([]string, rows*cols)
+	mlp.plot.Xlabel = make([]string, xlabels)
+	mlp.plot.Ylabel = make([]string, ylabels)
+
+	// Power Spectral Density, PSD[N/2] is the Nyquist critical frequency
+	// It is (sampling frequency)/2, the highest non-aliased frequency
+	PSD = make([]float64, fftSize/2)
+
+	// Open the audio wav file
+	f, err := os.Open(filepath.Join(dataDir, filename))
+	if err == nil {
+		defer f.Close()
+		dec := wav.NewDecoder(f)
+		bufInt := audio.IntBuffer{
+			Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
+			Data:   make([]int, 2*maxSamples), SourceBitDepth: bitDepth}
+		n, err := dec.PCMBuffer(&bufInt)
+		if err != nil {
+			fmt.Printf("PCMBuffer error: %v\n", err)
+			return fmt.Errorf("PCMBuffer error: %v", err.Error())
+		}
+		bufFlt := bufInt.AsFloatBuffer()
+		//fmt.Printf("%s samples = %d\n", filename, n)
+		mlp.nsamples = n
+		// x-axis is time or sample, y-axis is frequency
+		endpoints.xmin = 0.0
+		endpoints.xmax = float64(mlp.nsamples)
+		endpoints.ymin = 0.0
+		endpoints.ymax = float64(fftSize / 2) // equivalent to Nyquist critical frequency
+
+		// Calculate scale factors to convert physical units to screen units
+		xscale = float64(cols-1) / (endpoints.xmax - endpoints.xmin)
+		yscale = float64(rows-1) / (endpoints.ymax - endpoints.ymin)
+
+		// number of cells to interpolate in time and frequency
+		// round up so the cells in the plot grid are connected
+		ncellst := int((math.Ceil(float64(cols) * float64(fftSize/2) / float64(mlp.nsamples))))
+		ncellsf := int(math.Ceil(float64(rows) / float64((fftSize / 2))))
+
+		stepTime := float64((fftSize / 2) / ncellst)
+		stepFreq := 1.0 / float64(ncellsf)
+
+		// if wordsOnly, only do calculatePSD for samples inside the word boundaries to minimize
+		// checking the spectrum of noise.  This would give a broad range of frequencies which
+		// is not of interest.
+		if wordsOnly {
+			// loop over fltBuf and find the speech bounds
+			bounds, err = mlp.findWords(bufFlt.Data)
+			if err != nil {
+				fmt.Printf("findWords error: %v", err)
+				return fmt.Errorf("findWords error: %s", err.Error())
+			}
+		}
+
+		// for loop over samples, increment by fftSize/2, calculatePSD on the batch
+		// Overlap by 50% due to non-rectangular window to avoid Gibbs phenomenon
+		for smpl := 0; smpl < mlp.nsamples; smpl += fftSize / 2 {
+			if !wordsOnly || mlp.inBoundsSample(smpl, bounds) {
+				// calculate the PSD using Bartlett's or Welch's variant of the Periodogram
+				end := smpl + fftSize
+				if end > mlp.nsamples {
+					end = mlp.nsamples
+				}
+				_, psdMax, err := mlp.calculatePSD(bufFlt.Data[smpl:end], PSD, fftWindow, fftSize)
+				if err != nil {
+					fmt.Printf("calculatePSD error: %v\n", err)
+					return fmt.Errorf("calculatePSD error: %v", err.Error())
+				}
+
+				// for loop over the frequency bins in the PSD
+				for bin := 0; bin < fftSize/2; bin++ {
+					// find the grayscale color based on bin power
+					// largest power is black, smallest power is white
+					// shades of gray in-between black and white
+					var gs string
+					r := PSD[bin] / psdMax
+					if r < .1 {
+						gs = mlp.grayscale[4]
+					} else if r < .25 {
+						gs = mlp.grayscale[3]
+					} else if r < .5 {
+						gs = mlp.grayscale[2]
+					} else if r < .8 {
+						gs = mlp.grayscale[1]
+					} else {
+						gs = mlp.grayscale[0]
+					}
+
+					// interpolate in time
+					interpTime := float64(smpl)
+					for nct := 0; nct < ncellst; nct++ {
+						col := int((interpTime-endpoints.xmin)*xscale + .5)
+						if col >= cols {
+							col = cols - 1
+						}
+						// interpolate in frequency
+						interpFreq := float64(bin)
+						for ncf := 0; ncf < ncellsf; ncf++ {
+							row := int((endpoints.ymax-interpFreq)*yscale + .5)
+							if row < 0 {
+								row = 0
+							}
+							// Store the color in the plot Grid
+							mlp.plot.Grid[row*cols+col] = gs
+							interpFreq += stepFreq
+						}
+						interpTime += stepTime
+					}
+				}
+			}
+		}
+	} else {
+		// Set plot status
+		fmt.Printf("Error opening file %s: %v\n", filename, err)
+		return fmt.Errorf("error opening file %s: %v", filename, err)
+	}
+
+	// Construct x-axis labels
+	incr := (endpoints.xmax - endpoints.xmin) / ((xlabels - 1) * sampleRate)
+	x := endpoints.xmin / sampleRate
+	// First label is empty for alignment purposes
+	for i := range mlp.plot.Xlabel {
+		mlp.plot.Xlabel[i] = fmt.Sprintf("%.2f", x)
+		x += incr
+	}
+
+	// Apply the  sampling rate in Hz to the y-axis using a scale factor
+	// Convert the fft size to sampleRate/2, the Nyquist critical frequency
+	sf := 0.5 * sampleRate / endpoints.ymax
+
+	// Construct y-axis labels
+	incr = (endpoints.ymax - endpoints.ymin) / (ylabels - 1)
+	y := endpoints.ymin
+	// First label is empty for alignment purposes
+	for i := range mlp.plot.Ylabel {
+		mlp.plot.Ylabel[i] = fmt.Sprintf("%.0f", y*sf)
+		y += incr
+	}
+
+	return nil
+}
+
+// Create a spectrogram of the speech waveform
+func handleSpectrogram(w http.ResponseWriter, r *http.Request) {
+	var (
+		plot       PlotT
+		mlp        *MLP
+		wordWindow int  = 0
+		wordsOnly  bool = false
+	)
+
+	// Determine operation to perform on the speech waveform:  play, add, delete
+	wordOp := r.FormValue("wordop")
+	if wordOp == "play" {
+		filename := r.FormValue("fileplaydelete")
+		if len(filename) == 0 {
+			fmt.Println("Enter filename for playing the word")
+			plot.Status = "Enter filename for playing the word"
+			// Write to HTTP using template and grid
+			if err := tmplSpectrogram.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
+		}
+		audiowavdir := r.FormValue("audiowavdir")
+		if len(audiowavdir) == 0 {
+			fmt.Println("Enter directory for the audio wav file")
+			plot.Status = "Enter director for the audio wav file"
+			// Write to HTTP using template and grid
+			if err := tmplSpectrogram.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
+		}
+
+		// Determine if time or spectrogram domain plot
+		domain := r.FormValue("domain")
+		if domain == "spectrogram" {
+			plot.Domain = "Spectrogram (Hz/sec)"
+		} else {
+			plot.Domain = "Time Domain (sec)"
+		}
+
+		if domain == "time" {
+			mlp = &MLP{plot: &plot}
+			err := mlp.processTimeDomain(filepath.Join(audiowavdir, filename))
+			if err != nil {
+				fmt.Printf("processTimeDomain error: %v\n", err)
+				plot.Status = fmt.Sprintf("processTimeDomain error: %v", err.Error())
+				// Write to HTTP using template and grid
+				if err := tmplSpectrogram.Execute(w, plot); err != nil {
+					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+				}
+				return
+			}
+			plot.Status += fmt.Sprintf("Time Domain of %s plotted.", filepath.Join(dataDir, audiowavdir, filename))
+			// Spectrogram Domain
+		} else {
+			fftWindow := r.FormValue("fftwindow")
+
+			txt := r.FormValue("fftsize")
+			fftSize, err := strconv.Atoi(txt)
+			if err != nil {
+				fmt.Printf("fftsize int conversion error: %v\n", err)
+				plot.Status = fmt.Sprintf("fftsize int conversion error: %s", err.Error())
+				// Write to HTTP using template and grid
+				if err := tmplSpectrogram.Execute(w, plot); err != nil {
+					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+				}
+				return
+			}
+
+			if len(r.FormValue("wordsonly")) > 0 {
+				wordsOnly = true
+				txt := r.FormValue("wordwindow")
+				if len(txt) == 0 {
+					fmt.Println("Word window not defined for spectrogram  domain")
+					plot.Status = "Word window not defined for spectrogram  domain"
+					// Write to HTTP using template and grid
+					if err := tmplSpectrogram.Execute(w, plot); err != nil {
+						log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+					}
+					return
+				}
+				wordWindow, err = strconv.Atoi(txt)
+				if err != nil {
+					fmt.Printf("Conversion to int for 'wordwindow' error: %v\n", err)
+					plot.Status = "Conversion to int for 'window' error"
+					// Write to HTTP using template and grid
+					if err := tmplSpectrogram.Execute(w, plot); err != nil {
+						log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+					}
+					return
+				}
+			}
+
+			mlp = &MLP{plot: &plot, wordWindow: wordWindow, fftSize: fftSize}
+			mlp.grayscale = make(map[int]string)
+			for i := 0; i < ncolors; i++ {
+				mlp.grayscale[i] = fmt.Sprintf("gs%d", i)
+			}
+
+			err = mlp.processSpectrogram(filepath.Join(audiowavdir, filename), fftWindow, wordsOnly, fftSize)
+			if err != nil {
+				fmt.Printf("processSpectrogram error: %v\n", err)
+				plot.Status = fmt.Sprintf("processSpectrogram error: %v", err.Error())
+				// Write to HTTP using template and grid
+				if err := tmplSpectrogram.Execute(w, plot); err != nil {
+					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+				}
+				return
+			}
+			plot.Status += fmt.Sprintf("Spectrogram of %s plotted.", filepath.Join(dataDir, audiowavdir, filename))
+		}
+
+		// Play the audio wav if fmedia is available in the PATH environment variable
+		fmedia, err := exec.LookPath("fmedia.exe")
+		if err != nil {
+			log.Fatal("fmedia is not available in PATH")
+		} else {
+			fmt.Printf("fmedia is available in path: %s\n", fmedia)
+			cmd := exec.Command(fmedia, filepath.Join(dataDir, audiowavdir, filename))
+			stdoutStderr, err := cmd.CombinedOutput()
+			if err != nil {
+				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
+
+			} else {
+				fmt.Printf("fmedia output: %s\n", string(stdoutStderr))
+			}
+		}
+	} else if wordOp == "new" {
+		mlp = &MLP{plot: &plot}
+		filename := r.FormValue("filenew")
+		if len(filename) == 0 {
+			fmt.Println("Enter filename for the new word")
+			plot.Status = "Enter filename for the new word"
+			// Write to HTTP using template and grid
+			if err := tmplSpectrogram.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
+		}
+		fmedia, err := exec.LookPath("fmedia.exe")
+		if err != nil {
+			log.Fatal("fmedia is not available in PATH")
+		} else {
+			fmt.Printf("fmedia is available in path: %s\n", fmedia)
+			// filename includes the audiowav folder; eg.,  audiowavX/cat.wav, were X = 0, 1, 2, ...
+			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, filename), "--until=5",
+				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-50", "--stop-dblevel=-20;1")
+			stdoutStderr, err := cmd.CombinedOutput()
+			if err != nil {
+				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
+				plot.Status = fmt.Sprintf("stdout, stderr error from running fmedia: %v", err.Error())
+				// Write to HTTP using template and grid
+				if err := tmplSpectrogram.Execute(w, plot); err != nil {
+					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+				}
+				return
+			} else {
+				fmt.Printf("fmedia output: %s\n", string(stdoutStderr))
+			}
+		}
+		// delete
+	} else if wordOp == "delete" {
+		mlp = &MLP{plot: &plot}
+		filename := r.FormValue("fileplaydelete")
+		if len(filename) == 0 {
+			fmt.Println("Enter filename for deleting the word from the vocabulary")
+			plot.Status = "Enter filename for deleting the word from the vocabulary"
+			// Write to HTTP using template and grid
+			if err := tmplSpectrogram.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
+		}
+		audiowavdir := r.FormValue("audiowavdir")
+		if len(audiowavdir) == 0 {
+			fmt.Println("Enter directory for the audio wav file")
+			plot.Status = "Enter directory for the audio wav file"
+			// Write to HTTP using template and grid
+			if err := tmplSpectrogram.Execute(w, plot); err != nil {
+				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+			}
+			return
+		}
+		if filepath.Ext(filename) == ".wav" {
+			if err := os.Remove(path.Join(dataDir, audiowavdir, filename)); err != nil {
+				plot.Status = fmt.Sprintf("Remove %s error: %v", filename, err)
+				// Write to HTTP using template and grid
+				if err := tmplSpectrogram.Execute(w, plot); err != nil {
+					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+				}
+				return
+			}
+		}
+	} else {
+		fmt.Println("Enter spectrogram parameters.")
+		plot.Status = "Enter spectrogram parameters"
+		// Write to HTTP using template and grid
+		if err := tmplSpectrogram.Execute(w, plot); err != nil {
+			log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+		}
+		return
+	}
+
+	// Execute data on HTML template
+	if err := tmplSpectrogram.Execute(w, mlp.plot); err != nil {
+		log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+	}
+
+}
+
 // executive creates the HTTP handlers, listens and serves
 func main() {
 	// Set up HTTP servers with handlers for training and testing the MLP Neural Network
@@ -2277,6 +2417,8 @@ func main() {
 	http.HandleFunc(patternTestingMLP, handleTestingMLP)
 	// Create HTTP handler for vocabulary generation
 	http.HandleFunc(patternVocabularyMLP, handleVocabularyGeneration)
+	// Create HTTP handler for spectrogram generation
+	http.HandleFunc(patternSpectrogram, handleSpectrogram)
 	fmt.Printf("Multilayer Perceptron Neural Network Server listening on %v.\n", addr)
 	http.ListenAndServe(addr, nil)
 }

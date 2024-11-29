@@ -167,6 +167,7 @@
 				<li class="links"><a href="http://127.0.0.1:8080/speechMsgMLP">Train</a></li>
 				<li class="links"><a href="http://127.0.0.1:8080/speechMsgMLPtest">Test</a></li>
 				<li class="links"><a href="http://127.0.0.1:8080/speechMsgMLPvocabulary">Vocabulary</a></li>
+				<li class="links"><a href="http://127.0.0.1:8080/speechspectrogram">Spectrogram</a></li>
 			</ul>
 		</nav>
 		<p><b>{{.Domain}}</b></p>
@@ -218,47 +219,22 @@
 									<td>{{.Threshold}}</td>
 								</tr>
 								<tr>
-									<td>Predictor Order:</td>
-									<td>{{.PredictorOrder}}</td>
-									<td></td>
-									<td></td>
+									<td>FFT Size:</td>
+									<td>{{.FFTSize}}</td>
+									<td>FFT Window:</td>
+									<td>{{.FFTWindow}}</td>
 								</tr>
 							</table>
 							<input type="checkbox" id="newmessage" name="message" value="new" />
 							<label for="newmessage">New Message</label>
+							Spectrum:
+							<input type="checkbox" id="wordsonly" name="wordsonly" value="wordsonly"/>
+							<label for="wordsonly">Words Only</label>
 							<br />
 							<input type="radio" name="domain" value="time" id="timedomain" checked />
 							<label for="timedomain">Time Response</label>
-							<input type="radio" name="domain" value="frequency" id="frequencydomain" />
-							<label for="frequencydomain">Frequency Response</label>
-							<input type="radio" name="domain" value="predictor" id="predictordomain" />
-							<label for="predictordomain">Predictor Response</label>
-							<hr />
-							<h3>Frequency Domain Parameters</h3>
-							<p>Enter frequency domain configuration.  FFTs are averaged with 50% overlap.
-								Zero-padding is used as necessary given the number of segments to average and 
-								the FFT size.  The data is windowed to reduce sidelobe spectral leakage with a 
-								cost of main lobe widening and reduced resolution.                                                         
-							</p>	
-							<label for="fftwindow" class="fftparam">FFT Window:</label>
-							<select id="fftwindow" name="fftwindow" required>
-								<option value="Bartlett">Bartlett</option>
-								<option value="Welch">Welch</option>
-								<option value="Hamming">Hamming</option>
-								<option value="Hanning">Hanning</option>
-								<option value="Rectangle" selected>Rectangle</option>
-							</select>
-							<br />
-							<label for="fftsize" class="fftparam">FFT Size:</label>
-							<select id="fftsize" name="fftsize" required>
-								<option value="256">256</option>
-								<option value="512">512</option>
-								<option value="1024">1024</option>
-								<option value="2048">2048</option>
-								<option value="4096">4096</option>
-								<option value="8192" selected>8192</option>
-							</select>
-							<hr />
+							<input type="radio" name="domain" value="spectrogram" id="spectrogram" />
+							<label for="spectrogram">Spectrogram</label>
 						</div>
 						<input type="submit" value="Submit" />
 						<input type="text" size="100px" id="status" name="status" value="{{.Status}}" readonly />

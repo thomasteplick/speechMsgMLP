@@ -98,6 +98,28 @@
 				color: black;
 			}
 			
+			/* grayscale for spectrogram, black is highest power, white is lowest power */
+			/* in decimal: 0, 25, 50, ..., 200, 225, 255 */
+			div.grid > div.gs0 {
+				background-color: #000000;
+			}
+
+			div.grid > div.gs1 {
+				background-color: #646464;
+			}
+
+			div.grid > div.gs2 {
+				background-color: #969696;
+			}
+
+			div.grid > div.gs3 {
+				background-color: #e1e1e1;
+			}
+
+			div.grid > div.gs4 {
+				background-color: #ffffff;
+			}
+
 			#form {
 				margin-left: 10px;
 				width: 500px;
@@ -155,6 +177,7 @@
 				<li class="links"><a href="http://127.0.0.1:8080/speechMsgMLP">Train</a></li>
 				<li class="links"><a href="http://127.0.0.1:8080/speechMsgMLPtest">Test</a></li>
 				<li class="links"><a href="http://127.0.0.1:8080/speechMsgMLPvocabulary">Vocabulary</a></li>
+				<li class="links"><a href="http://127.0.0.1:8080/speechspectrogram">Spectrogram</a></li>
 			</ul>
 		</nav>
 		<p><b>{{.Domain}}</b></p>
@@ -184,8 +207,8 @@
 								If a new vocabulary word is wanted, enter the filename in the input text box 
 								and speak the new vocabulary word after you submit the form.  If you want to
 								observe or delete a current vocabulary word, enter the file from the select 
-								list.  Choose time or frequency domains to observe and enter the frequency
-								domain parameters for frequency domain observation.
+								list.  Choose time or spectrogram domains to observe and enter the frequency
+								domain parameters for spectrogram observation.
 							</p>
 							<p>
 								<strong>The filename should be the same as the new word you are adding to the vocabulary.
@@ -223,15 +246,17 @@
 							<br />
 							<input type="radio" name="domain" value="time" id="timedomain" checked />
 							<label for="timedomain">Time Domain</label>
-							<input type="radio" name="domain" value="frequency" id="frequencydomain" />
-							<label for="frequencydomain">Frequency Domain</label>
+							<input type="radio" name="domain" value="spectrogram" id="spectrogram" />
+							<label for="spectrogram">Spectrogram</label>
 							<hr />
 							<h3>Frequency Domain Parameters</h3>
 							<p>Enter frequency domain configuration.  FFTs are averaged with 50% overlap.
 								Zero-padding is used as necessary given the number of segments to average and 
 								the FFT size.  The data is windowed to reduce sidelobe spectral leakage with a 
-								cost of main lobe widening and reduced resolution.                                                         
-							</p>	
+								cost of main lobe widening and reduced resolution.  Words Only checkbox skips
+								audio samples that don't contain words.  Word window checks for words boundaries
+								when Words Only is used.
+							</p>							                                                      
 							<label for="fftwindow" class="fftparam">FFT Window:</label>
 							<select id="fftwindow" name="fftwindow" required>
 								<option value="Bartlett">Bartlett</option>
@@ -241,14 +266,24 @@
 								<option value="Rectangle" selected>Rectangle</option>
 							</select>
 							<br />
+							Spectrum:
+							<input type="checkbox" id="wordsonly" name="wordsonly" value="wordsonly"/>
+							<label for="wordsonly">Words Only</label>
+							<br />
 							<label for="fftsize" class="fftparam">FFT Size:</label>
 							<select id="fftsize" name="fftsize" required>
-								<option value="256">256</option>
-								<option value="512">512</option>
-								<option value="1024">1024</option>
-								<option value="2048">2048</option>
-								<option value="4096">4096</option>
-								<option value="8192" selected>8192</option>
+								<option value="256" selected>256</option>
+							</select>
+							Word Window:
+							<select id="wordwindow" name="wordwindow">
+								<option value="" selected>... Enter Window (ms) ...</option>
+								<option value="40">40 ms</option>
+								<option value="50">50 ms</option>
+								<option value="60">60 ms</option>
+								<option value="70">70 ms</option>
+								<option value="80">80 ms</option>
+								<option value="90">90 ms</option>
+								<option value="100">100 ms</option>
 							</select>
 						</div>
 						<input type="submit" value="Submit" />
