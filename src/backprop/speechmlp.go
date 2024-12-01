@@ -20,7 +20,8 @@ The MLP classifies the wav file based on its spectral content versus time. The t
 results are shown.  The user can plot the time domain or the spectrogram
 (frequency versus time) of the wav file.  The spectrogram is a three-dimentional
 plot of the spectral power versus time.  The third dimension is a grayscale color.
-Short-time Fourier Transforms (STFT) are used to compute the FFT of 32 ms blocks of audio data.
+Short-time Fourier Transforms (STFT) are used to compute the FFT from 32ms blocks
+of audio data.
 */
 
 package main
@@ -63,16 +64,16 @@ const (
 	b                    = 2.0 / 3.0                      // activation function const
 	K1                   = b / a
 	K2                   = a * a
-	dataDir              = "data/"        // directory for the weights and audio wav files
-	classes              = 8              // number of audio wav files to classify
-	rows                 = 300            // rows in canvas
-	cols                 = 300            // columns in canvas
-	sampleRate           = 8000           // Hz or samples/sec
-	maxSamples           = 1 * sampleRate // max audio wav samples = 1 sec * sampleRate
-	twoPi                = 2.0 * math.Pi  // 2Pi
-	bitDepth             = 16             // audio wav encoder/decoder sample size
-	ncolors              = 5              // number of grayscale colors in spectrogram
-	msgTestWav           = "message.wav"  // Test message/subject wav file
+	dataDir              = "data/"       // directory for the weights and audio wav files
+	classes              = 8             // number of audio wav files to classify
+	rows                 = 300           // rows in canvas
+	cols                 = 300           // columns in canvas
+	sampleRate           = 8000          // Hz or samples/sec
+	maxSamples           = 10000         // max audio wav samples = 1.158 sec * sampleRate
+	twoPi                = 2.0 * math.Pi // 2Pi
+	bitDepth             = 16            // audio wav encoder/decoder sample size
+	ncolors              = 5             // number of grayscale colors in spectrogram
+	msgTestWav           = "message.wav" // Test message/subject wav file
 )
 
 // Type to contain all the HTML template actions
@@ -386,6 +387,7 @@ func (mlp *MLP) runEpochs() error {
 	}
 
 	// Create spectrogram files from the audio wav files if they don't exist
+	// Note:  To recreate spectrogram files, delete spectrogram0/ files
 	spectrogramDir := filepath.Join(dataDir, "spectrogram0")
 	files, err := os.ReadDir(spectrogramDir)
 	if err != nil {
@@ -793,7 +795,7 @@ func newMLP(r *http.Request, hiddenLayers int, plot *PlotT) (*MLP, error) {
 
 	// grayscale slice holds maxSamples-fftSize + 1 floats
 	for i := range mlp.samples {
-		mlp.samples[i].grayscale = make([]float64, ilnodes)
+		mlp.samples[i].grayscale = make([]float64, ilnodes-1)
 	}
 
 	// construct link that holds the weights and weight deltas
@@ -1323,6 +1325,7 @@ func (mlp *MLP) runClassification() error {
 		for bin := 0; bin < mlp.fftSize/2; bin++ {
 			grayscale[i] = -1.0
 		}
+		nSTFTs++
 	}
 
 	samp := Sample{desired: 0, grayscale: grayscale, name: ""}
@@ -1454,6 +1457,7 @@ func newTestingMLP(plot *PlotT) (*MLP, error) {
 	mlp.link = make([][]Link, hiddenLayers+1)
 
 	ilnodes := ((maxSamples-fftSize)/(fftSize/2)+1)*(fftSize/2) + 1
+
 	nwgts := ilnodes * hidLayersDepth
 	mlp.link[0] = make([]Link, nwgts)
 	for i := 0; i < nwgts; i++ {
@@ -1525,11 +1529,10 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 	// Option to plot spectrogram output added.
 
 	var (
-		plot       PlotT
-		mlp        *MLP
-		err        error
-		wordWindow int  = 0
-		wordsOnly  bool = false
+		plot      PlotT
+		mlp       *MLP
+		err       error
+		wordsOnly bool = false
 	)
 
 	// Fill in the vocabulary
@@ -1564,7 +1567,7 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			fmt.Printf("fmedia is available in path: %s\n", fmedia)
 			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, msgTestWav), "--until=5",
-				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-50", "--stop-dblevel=-30;1")
+				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-70", "--stop-dblevel=-30;1")
 			stdoutStderr, err := cmd.CombinedOutput()
 			if err != nil {
 				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err.Error())
@@ -1611,26 +1614,15 @@ func handleTestingMLP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mlp = &MLP{plot: &plot, wordWindow: wordWindow, fftSize: mlp.fftSize}
-	mlp.grayscale = make(map[int]string)
-	for i := 0; i < ncolors; i++ {
-		mlp.grayscale[i] = fmt.Sprintf("gs%d", i)
-	}
-
 	if mlp.domain == "spectrogram" {
 		if len(r.FormValue("wordsonly")) > 0 {
 			wordsOnly = true
-			txt := r.FormValue("wordwindow")
-			if len(txt) == 0 {
-				fmt.Println("Word window not defined for spectrogram  domain")
-				plot.Status = "Word window not defined for spectrogram  domain"
-				// Write to HTTP using template and grid
-				if err := tmplTestingMLP.Execute(w, plot); err != nil {
-					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-				}
-				return
-			}
 		}
+		mlp.grayscale = make(map[int]string)
+		for i := 0; i < ncolors; i++ {
+			mlp.grayscale[i] = fmt.Sprintf("gs%d", i)
+		}
+
 		err = mlp.processSpectrogram(msgTestWav, mlp.fftWindow, wordsOnly, mlp.fftSize)
 		if err != nil {
 			fmt.Printf("proessSpectrogram error: %v\n", err)
@@ -1965,7 +1957,7 @@ func handleVocabularyGeneration(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("fmedia is available in path: %s\n", fmedia)
 			// filename includes the audiowav folder; eg.,  audiowavX/cat.wav, were X = 0, 1, 2, ...
 			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, filename), "--until=5",
-				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-50", "--stop-dblevel=-20;1")
+				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-70", "--stop-dblevel=-20;1")
 			stdoutStderr, err := cmd.CombinedOutput()
 			if err != nil {
 				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
@@ -2343,7 +2335,7 @@ func handleSpectrogram(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("fmedia is available in path: %s\n", fmedia)
 			// filename includes the audiowav folder; eg.,  audiowavX/cat.wav, were X = 0, 1, 2, ...
 			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, filename), "--until=5",
-				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-50", "--stop-dblevel=-20;1")
+				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-70", "--stop-dblevel=-20;1")
 			stdoutStderr, err := cmd.CombinedOutput()
 			if err != nil {
 				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
