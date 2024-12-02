@@ -28,7 +28,14 @@ network.  The <i>Train</i> page allows the speech and frequency domain parameter
 the form in the HTML, the audio WAV files are converted to spectrograms and submitted to the MLP NN.  Next the
 <i>Test</i> page will submit a test WAV file.  You can enter a new one by selecting the <i>New Message</i> radio button,
 otherwise the saved test WAV file will be played.  You can plot the time domain or the spectrogram of the test WAV file.
-The <i>Words Only</i> checkbox will only display the spectrogram of the actual speech excluding the noise.
+The <i>Words Only</i> checkbox will only display the spectrogram of the actual speech excluding the noise.  You will
+hear the vocabulary word that is displayed.
+</p>
+<p>
+The <i>Vocabulary</i> allows you to enter vocabulary words.  You select the name of the word and the folder in which
+it is stored.  You can also display the time domain and spectrogram of any vocabulary word that is saved.  The 
+<i>Spectrogram</i> page allows you to view time domain or spectrogram plots. You can play a current WAV file
+or enter a new one.  This page is similar to the <i>Test</i> page.
 </p>
 
 
