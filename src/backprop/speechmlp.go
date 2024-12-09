@@ -226,7 +226,9 @@ func (mlp *MLP) determineClass() error {
 		if output.y > 0.0 {
 			class |= (1 << i)
 		}
+		fmt.Printf("(i:%d,%.3f), ", i, output.y)
 	}
+	fmt.Println()
 	mlp.words = append(mlp.words, mlp.samples[class].name)
 
 	return nil
@@ -411,7 +413,7 @@ func (mlp *MLP) runEpochs() error {
 
 		// choose the spectrogram directory
 		for _, val := range readOrder {
-			spectrogramDir := filepath.Join(dataDir, fmt.Sprintf("spectrogram%d", val))
+			spectrogramDir = filepath.Join(dataDir, fmt.Sprintf("spectrogram%d", val))
 			if err := mlp.createExamples(spectrogramDir); err != nil {
 				fmt.Printf("createExamples error: %v\n", err)
 				return fmt.Errorf("createExamples error: %v", err.Error())
@@ -539,22 +541,41 @@ func (mlp *MLP) createSpectrograms() error {
 
 				// Create the spectrogram and save to disk
 				// loop over the word boundaries using 50% overlap
+				// Repeat the bounds as often as necessary to do maxSTFTs
 				nSTFTs := 0
-				for _, bound := range bounds {
-					// loop over the frequency bins
-					for smpl := bound.start; smpl < bound.stop; smpl += mlp.fftSize / 2 {
-						// Skip noise, only speech is useful
-						if mlp.inBoundsSample(smpl, bounds) {
-							_, psdMax, err := mlp.calculatePSD(bufFlt.Data[smpl:smpl+mlp.fftSize], PSD, mlp.fftWindow, mlp.fftSize)
-							if err != nil {
-								fmt.Printf("calculatePSD error: %v\n", err)
-								return fmt.Errorf("calculatePSD error: %v", err.Error())
-							}
-							// Write each STFT PSD to one row in the csv file
-							n := 0
-							for bin := 0; bin < mlp.fftSize/2-1; bin++ {
-								// Relative power in the bin determines the grayscale color
-								r := PSD[bin] / psdMax
+			done:
+				for {
+					for _, bound := range bounds {
+						// loop over the frequency bins
+						for smpl := bound.start; smpl < bound.stop; smpl += mlp.fftSize / 2 {
+							// Skip noise, only speech is useful
+							if mlp.inBoundsSample(smpl, bounds) {
+								_, psdMax, err := mlp.calculatePSD(bufFlt.Data[smpl:smpl+mlp.fftSize], PSD, mlp.fftWindow, mlp.fftSize)
+								if err != nil {
+									fmt.Printf("calculatePSD error: %v\n", err)
+									return fmt.Errorf("calculatePSD error: %v", err.Error())
+								}
+								// Write each STFT PSD to one row in the csv file
+								n := 0
+								for bin := 0; bin < mlp.fftSize/2-1; bin++ {
+									// Relative power in the bin determines the grayscale color
+									r := PSD[bin] / psdMax
+									// five-color grayscale, 0 is white, 4 is black
+									if r < .1 {
+										n = 0
+									} else if r < .25 {
+										n = 1
+									} else if r < .5 {
+										n = 2
+									} else if r < .8 {
+										n = 3
+									} else {
+										n = 4
+									}
+									fmt.Fprintf(fspec, "%d,", n)
+								}
+								// no comma, insert newline
+								r := PSD[mlp.fftSize/2-1] / psdMax
 								// five-color grayscale, 0 is white, 4 is black
 								if r < .1 {
 									n = 0
@@ -567,35 +588,14 @@ func (mlp *MLP) createSpectrograms() error {
 								} else {
 									n = 4
 								}
-								fmt.Fprintf(fspec, "%d,", n)
+								fmt.Fprintf(fspec, "%d\n", n)
+								nSTFTs++
+								if nSTFTs >= maxSTFTs {
+									break done
+								}
 							}
-							// no comma, insert newline
-							r := PSD[mlp.fftSize/2-1] / psdMax
-							// five-color grayscale, 0 is white, 4 is black
-							if r < .1 {
-								n = 0
-							} else if r < .25 {
-								n = 1
-							} else if r < .5 {
-								n = 2
-							} else if r < .8 {
-								n = 3
-							} else {
-								n = 4
-							}
-							fmt.Fprintf(fspec, "%d\n", n)
-							nSTFTs++
 						}
 					}
-				}
-				// remaining STFT PSDs are empty
-				for nSTFTs < maxSTFTs {
-					for bin := 0; bin < mlp.fftSize/2-1; bin++ {
-						fmt.Fprintf(fspec, "0,")
-					}
-					// no comma, insert newline
-					fmt.Fprintf(fspec, "0\n")
-					nSTFTs++
 				}
 				class++
 			}
@@ -1030,12 +1030,12 @@ func handleTrainingMLP(w http.ResponseWriter, r *http.Request) {
 		// save weights
 		// save first layer, one weight per line because too long to scan in
 		for _, node := range mlp.link[0] {
-			fmt.Fprintf(f, "%.10f\n", node.wgt)
+			fmt.Fprintf(f, "%.16f\n", node.wgt)
 		}
 		// save remaining layers one layer per line with csv
 		for _, layer := range mlp.link[1:] {
 			for _, node := range layer {
-				fmt.Fprintf(f, "%.10f,", node.wgt)
+				fmt.Fprintf(f, "%.16f,", node.wgt)
 			}
 			fmt.Fprintln(f)
 		}
@@ -1285,47 +1285,47 @@ func (mlp *MLP) runClassification() error {
 
 	// Create the spectrogram
 	// loop over the word boundaries using 50% overlap
+	// Repeat the bounds as often as necessary to do maxSTFTs
 	i := 0
 	nSTFTs := 0
-	for _, bound := range bounds {
-		// loop over the frequency bins
-		for smpl := bound.start; smpl < bound.stop; smpl += mlp.fftSize / 2 {
-			// Skip noise, only speech is useful
-			if mlp.inBoundsSample(smpl, bounds) {
-				_, psdMax, err := mlp.calculatePSD(bufFlt.Data[smpl:smpl+mlp.fftSize], PSD, mlp.fftWindow, mlp.fftSize)
-				if err != nil {
-					fmt.Printf("calculatePSD error: %v\n", err)
-					return fmt.Errorf("calculatePSD error: %v", err.Error())
-				}
-				// Write the spectrogram
-				for bin := 0; bin < mlp.fftSize/2; bin++ {
-					r := PSD[bin] / psdMax
-					val := 0.0
-					// five-color grayscale: -1.0, -.5, 0, .5, 1.0
-					if r < .1 {
-						val = -1.0
-					} else if r < .25 {
-						val = -0.5
-					} else if r < .5 {
-						val = 0
-					} else if r < .8 {
-						val = 0.5
-					} else {
-						val = 1.0
+done:
+	for {
+		for _, bound := range bounds {
+			// loop over the frequency bins
+			for smpl := bound.start; smpl < bound.stop; smpl += mlp.fftSize / 2 {
+				// Skip noise, only speech is useful
+				if mlp.inBoundsSample(smpl, bounds) {
+					_, psdMax, err := mlp.calculatePSD(bufFlt.Data[smpl:smpl+mlp.fftSize], PSD, mlp.fftWindow, mlp.fftSize)
+					if err != nil {
+						fmt.Printf("calculatePSD error: %v\n", err)
+						return fmt.Errorf("calculatePSD error: %v", err.Error())
 					}
-					grayscale[i] = val
-					i++
+					// Write the spectrogram
+					for bin := 0; bin < mlp.fftSize/2; bin++ {
+						r := PSD[bin] / psdMax
+						val := 0.0
+						// five-color grayscale: -1.0, -.5, 0, .5, 1.0
+						if r < .1 {
+							val = -1.0
+						} else if r < .25 {
+							val = -0.5
+						} else if r < .5 {
+							val = 0
+						} else if r < .8 {
+							val = 0.5
+						} else {
+							val = 1.0
+						}
+						grayscale[i] = val
+						i++
+					}
+					nSTFTs++
+					if nSTFTs >= maxSTFTs {
+						break done
+					}
 				}
-				nSTFTs++
 			}
 		}
-	}
-	// remaining STFTs are empty
-	for nSTFTs < maxSTFTs {
-		for bin := 0; bin < mlp.fftSize/2; bin++ {
-			grayscale[i] = -1.0
-		}
-		nSTFTs++
 	}
 
 	samp := Sample{desired: 0, grayscale: grayscale, name: ""}
