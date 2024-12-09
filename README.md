@@ -32,6 +32,13 @@ The <i>Words Only</i> checkbox will only display the spectrogram of the actual s
 hear the vocabulary word that is displayed.
 </p>
 <p>
+  The MLP Neural Network requires a fixed input size layer.  The vocabulary word length varies and as a result
+  so do the spectrograms of the audio WAV files.  There is a choice of what to do to extend the spectrogram input
+  to the MLP.  A first try was just to zero-out the inputs that were not used.  Even though the learning curve 
+  showed the MSE vs Epoch going to zero, testing results were poor.  Next was tried duplicating the spectrogram
+  as much as necessary to fill out the input layer; this worked.
+</p>
+<p>
 The <i>Vocabulary</i> allows you to enter vocabulary words.  You select the name of the word and the folder in which
 it is stored.  You can also display the time domain and spectrogram of any vocabulary word that is saved.  The 
 <i>Spectrogram</i> page allows you to view time domain or spectrogram plots. You can play a current WAV file
