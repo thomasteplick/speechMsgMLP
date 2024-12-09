@@ -17,7 +17,7 @@ The checkbox <i>Words Only</i> can be checked to eliminate the spectral noise fo
 audio is present.  This occurs at the beginning and end of the audio and in-between words.  The <i>Word Window</i>
 select dropdown determines the sample window to separate the beginning and ending of the words in the audio.
 This is used to eliminate the noise that is present in the spectrogram.  The window types used to reduce
-the spectral leakage from the high sidelobes of the rectangular window are Hamming, Welch, Hanning and 
+the spectral leakage from the high sidelobes of the rectangular window are Hamming, Welch, Hanning and Bartlett.
 The grayscale consists of five colors.  As stated above, black RGB(0,0,0), has the greatest power in the PSD bin.
 PSD bins with power more than 10dB down from the maximum bin power are white RGB(255,255,255).
 </p>
