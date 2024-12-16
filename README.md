@@ -42,7 +42,9 @@ hear the vocabulary word that is displayed.
 The <i>Vocabulary</i> allows you to enter vocabulary words.  You select the name of the word and the folder in which
 it is stored.  You can also display the time domain and spectrogram of any vocabulary word that is saved.  The 
 <i>Spectrogram</i> page allows you to view time domain or spectrogram plots. You can play a current WAV file
-or enter a new one.  This page is similar to the <i>Test</i> page.
+or enter a new one.  This page is similar to the <i>Test</i> page.  In order to generalize, additional folders
+of audio WAV and spectrogram files are required.  The more samples that are used to train the MLP, the better
+it will be at classifying the vocabulary word entered.
 </p>
 
 
