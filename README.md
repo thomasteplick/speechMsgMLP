@@ -9,7 +9,7 @@ between FFTs.  The sections are multiplied with various window types to minimize
 Time domain plots of the audio waveform can be displayed as well as the spectrogram.  The user can enter audio of not more than
 two seconds by selecting the <i>New Speech</i> radio button, as well as some previously created WAV file.  Upon selecting the
 <i>Play Speech</i> radio button, the user will hear the contents of the audio WAV file.  This program requires the <b>fmedia</b>
-programto be in the PATH environmental variable.
+program to be in the PATH environmental variable.
 </p>
 <p>
 The FFT size is 256.  The sampling rate is 8,000 Hz which produces a Nyquist critical frequency of 4,000 Hz.
