@@ -74,6 +74,7 @@ const (
 	bitDepth             = 16            // audio wav encoder/decoder sample size
 	ncolors              = 5             // number of grayscale colors in spectrogram
 	msgTestWav           = "message.wav" // Test message/subject wav file
+	ndirs                = 10            // number of directories containing the training spectrogram files
 )
 
 // Type to contain all the HTML template actions
@@ -357,8 +358,6 @@ func (mlp *MLP) propagateBackward() error {
 // runEpochs performs forward and backward propagation over each sample
 func (mlp *MLP) runEpochs() error {
 
-	// number of directories containing the training spectrogram files
-	const ndirs int = 10
 	// read order of the audio spectrogram file directories
 	readOrder := make([]int, ndirs)
 	for i := 0; i < ndirs; i++ {
@@ -456,8 +455,6 @@ func init() {
 
 // createSpectrograms creates spectrogram csv files from the audio WAV files
 func (mlp *MLP) createSpectrograms() error {
-	// number of directories containing the training audio wav files
-	const ndirs int = 10
 
 	// Power Spectral Density, PSD[N/2] is the Nyquist critical frequency
 	// It is (sampling frequency)/2, the highest non-aliased frequency
